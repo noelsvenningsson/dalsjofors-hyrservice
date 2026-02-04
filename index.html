@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dalsjöfors Hyrservice – Bokning</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header>
+    <h1>Dalsjöfors Hyrservice</h1>
+    <p>Boka ditt släp i fyra enkla steg</p>
+  </header>
+
+  <main id="wizard">
+    <div id="progress" class="progress">Steg 1 av 4</div>
+
+    <!-- Steg 1: Välj släp -->
+    <section id="step1" class="step">
+      <h2>Välj släp</h2>
+      <div class="trailers">
+        <button type="button" data-type="GALLER" class="card" id="card-galler">
+          <h3>Gallersläp</h3>
+          <p class="availability" id="availability-galler">–/2 lediga</p>
+        </button>
+        <button type="button" data-type="KAP" class="card" id="card-kap">
+          <h3>Kåpsläp</h3>
+          <p class="availability" id="availability-kap">–/2 lediga</p>
+        </button>
+      </div>
+      <div class="actions">
+        <button type="button" id="step1-next" disabled>Nästa</button>
+      </div>
+    </section>
+
+    <!-- Steg 2: Välj hyrestid -->
+    <section id="step2" class="step" hidden>
+      <h2>Välj hyrestid</h2>
+      <div class="rental-options">
+        <label>
+          <input type="radio" name="rentalType" value="TWO_HOURS">
+          2 timmar (200 kr)
+        </label>
+        <label>
+          <input type="radio" name="rentalType" value="FULL_DAY">
+          Heldag (250/300 kr)
+        </label>
+      </div>
+      <p id="price-info" class="info"></p>
+      <div class="actions">
+        <button type="button" id="step2-back">Tillbaka</button>
+        <button type="button" id="step2-next" disabled>Nästa</button>
+      </div>
+    </section>
+
+    <!-- Steg 3: Datum och starttid -->
+    <section id="step3" class="step" hidden>
+      <h2>Välj datum och tid</h2>
+      <div class="date-time-picker">
+        <label>Datum
+          <input type="date" id="rental-date">
+        </label>
+        <label id="time-container" hidden>Tid
+          <select id="rental-time"></select>
+        </label>
+      </div>
+      <p id="availability-info" class="info"></p>
+      <div class="actions">
+        <button type="button" id="step3-back">Tillbaka</button>
+        <button type="button" id="step3-next" disabled>Nästa</button>
+      </div>
+    </section>
+
+    <!-- Steg 4: Sammanfattning -->
+    <section id="step4" class="step" hidden>
+      <h2>Sammanfattning</h2>
+      <div id="summary"></div>
+      <div class="actions">
+        <button type="button" id="step4-back">Tillbaka</button>
+        <button type="button" id="proceed-pay">Fortsätt till betalning</button>
+      </div>
+    </section>
+
+    <!-- Dev‑panel (visas endast med ?dev=1) -->
+    <section id="dev-panel" class="dev" hidden>
+      <h3>Dev‑panel</h3>
+      <p id="debug-info"></p>
+      <button type="button" id="dev-book">Skapa testbokning</button>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; 2026 Dalsjöfors Hyrservice AB</p>
+    <p>Dalsjöfors Hyrservice AB • Org.nr: 559062-4556 • Momsnr: SE559062455601 • Adress: Boråsvägen 58B, 516 34 Dalsjöfors • Telefon: 070‑457 97 09</p>
+    <p>Frågor eller problem? Ring <strong>070‑457 97 09</strong></p>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,136 @@
+/* Baseline styling for Dalsjöfors Hyrservice wizard */
+
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  background: #f8f9fb;
+  color: #333;
+}
+
+header, footer {
+  background: #0b3b75;
+  color: #fff;
+  text-align: center;
+  padding: 1rem;
+}
+
+main#wizard {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.progress {
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+  color: #666;
+}
+
+.step {
+  background: #fff;
+  padding: 1rem;
+  border-radius: 12px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+  margin-bottom: 1rem;
+}
+
+.step h2 {
+  margin-top: 0;
+  font-size: 1.3rem;
+}
+
+.trailers {
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.card {
+  flex: 1 1 calc(50% - 0.5rem);
+  padding: 1rem;
+  text-align: center;
+  background: #eef2f9;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+.card.selected {
+  background: #d8e7ff;
+  box-shadow: 0 0 0 2px #0b3b75;
+}
+
+.card h3 {
+  margin: 0 0 0.5rem;
+}
+
+.availability {
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.rental-options label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.date-time-picker label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+select, input[type="date"] {
+  font-size: 1rem;
+  padding: 0.3rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.info {
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+  color: #333;
+}
+
+.actions {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 1rem;
+}
+
+.actions button {
+  padding: 0.6rem 1rem;
+  font-size: 1rem;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  color: #fff;
+  background: #0b3b75;
+  transition: background 0.2s;
+}
+
+.actions button:disabled {
+  background: #9ca5b3;
+  cursor: not-allowed;
+}
+
+#dev-panel {
+  background: #fff8e1;
+  border: 1px solid #ffecb3;
+  padding: 0.5rem;
+  margin-top: 1rem;
+}
+
+#dev-panel h3 {
+  margin-top: 0;
+  font-size: 1rem;
+}
+
+@media (max-width: 480px) {
+  .card {
+    flex: 1 1 100%;
+  }
+}
