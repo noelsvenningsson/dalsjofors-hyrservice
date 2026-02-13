@@ -7,17 +7,21 @@
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <header>
-    <h1>Dalsjöfors Hyrservice</h1>
-    <p>Boka ditt släp i fyra enkla steg</p>
+  <header class="site-header">
+    <div class="header-inner">
+      <p class="kicker">Trygg släpvagnsuthyrning</p>
+      <h1>Dalsjöfors Hyrservice</h1>
+      <p class="lead">Boka ditt släp i fyra enkla steg</p>
+    </div>
   </header>
 
   <main id="wizard">
-    <div id="progress" class="progress">Steg 1 av 4</div>
+    <div id="progress" class="progress" aria-live="polite">Steg 1 av 4</div>
 
     <!-- Steg 1: Välj släp -->
     <section id="step1" class="step">
       <h2>Välj släp</h2>
+      <p class="step-intro">Välj vilken typ av släp du vill hyra.</p>
       <div class="trailers">
         <button type="button" data-type="GALLER" class="card" id="card-galler">
           <h3>Gallersläp</h3>
@@ -36,6 +40,7 @@
     <!-- Steg 2: Välj hyrestid -->
     <section id="step2" class="step" hidden>
       <h2>Välj hyrestid</h2>
+      <p class="step-intro">Välj om du vill hyra i två timmar eller heldag.</p>
       <div class="rental-options">
         <label>
           <input type="radio" name="rentalType" value="TWO_HOURS">
@@ -56,6 +61,7 @@
     <!-- Steg 3: Datum och starttid -->
     <section id="step3" class="step" hidden>
       <h2>Välj datum och tid</h2>
+      <p class="step-intro">Ange när uthyrningen ska starta.</p>
       <div class="date-time-picker">
         <label>Datum
           <input type="date" id="rental-date">
@@ -74,7 +80,8 @@
     <!-- Steg 4: Sammanfattning -->
     <section id="step4" class="step" hidden>
       <h2>Sammanfattning</h2>
-      <div id="summary"></div>
+      <p class="step-intro">Kontrollera uppgifterna innan du går vidare till Swish-betalning.</p>
+      <div id="summary" class="summary-list"></div>
       <div class="actions">
         <button type="button" id="step4-back">Tillbaka</button>
         <button type="button" id="proceed-pay">Fortsätt till betalning</button>
@@ -89,7 +96,7 @@
     </section>
   </main>
 
-  <footer>
+  <footer class="site-footer">
     <p>&copy; 2026 Dalsjöfors Hyrservice AB</p>
     <p>Dalsjöfors Hyrservice AB • Org.nr: 559062-4556 • Momsnr: SE559062455601 • Adress: Boråsvägen 58B, 516 34 Dalsjöfors • Telefon: 070‑457 97 09</p>
     <p>Frågor eller problem? Ring <strong>070‑457 97 09</strong></p>
