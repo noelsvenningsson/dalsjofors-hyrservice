@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
@@ -17,6 +18,9 @@ class ApiValidationHardeningTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._tmpdir = TemporaryDirectory()
         cls._original_db_path = db.DB_PATH
+        cls._original_admin_token = os.environ.get("ADMIN_TOKEN")
+        cls._admin_token = "test-admin-token"
+        os.environ["ADMIN_TOKEN"] = cls._admin_token
         db.DB_PATH = Path(cls._tmpdir.name) / "test_database.db"
         db.init_db()
 
@@ -30,6 +34,10 @@ class ApiValidationHardeningTest(unittest.TestCase):
         cls._server.shutdown()
         cls._server.server_close()
         cls._thread.join(timeout=2)
+        if cls._original_admin_token is None:
+            os.environ.pop("ADMIN_TOKEN", None)
+        else:
+            os.environ["ADMIN_TOKEN"] = cls._original_admin_token
         db.DB_PATH = cls._original_db_path
         cls._tmpdir.cleanup()
 
@@ -45,10 +53,13 @@ class ApiValidationHardeningTest(unittest.TestCase):
             return err.code, json.loads(body)
 
     def _post_json(self, path: str, payload: dict) -> tuple[int, dict]:
+        headers = {"Content-Type": "application/json"}
+        if path.startswith("/api/admin/"):
+            headers["X-Admin-Token"] = self._admin_token
         request = Request(
             f"{self._base_url}{path}",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:

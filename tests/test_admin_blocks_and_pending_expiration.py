@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import threading
 import unittest
@@ -19,6 +20,9 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._tmpdir = TemporaryDirectory()
         cls._original_db_path = db.DB_PATH
+        cls._original_admin_token = os.environ.get("ADMIN_TOKEN")
+        cls._admin_token = "test-admin-token"
+        os.environ["ADMIN_TOKEN"] = cls._admin_token
         db.DB_PATH = Path(cls._tmpdir.name) / "test_database.db"
         db.init_db()
 
@@ -32,14 +36,24 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
         cls._server.shutdown()
         cls._server.server_close()
         cls._thread.join(timeout=2)
+        if cls._original_admin_token is None:
+            os.environ.pop("ADMIN_TOKEN", None)
+        else:
+            os.environ["ADMIN_TOKEN"] = cls._original_admin_token
         db.DB_PATH = cls._original_db_path
         cls._tmpdir.cleanup()
 
-    def _post_json(self, path: str, payload: dict) -> tuple[int, dict]:
+    def _post_json(self, path: str, payload: dict, admin_token: str | None = "use-default") -> tuple[int, dict]:
+        headers = {"Content-Type": "application/json"}
+        if path.startswith("/api/admin/"):
+            if admin_token == "use-default":
+                headers["X-Admin-Token"] = self._admin_token
+            elif admin_token:
+                headers["X-Admin-Token"] = admin_token
         request = Request(
             f"{self._base_url}{path}",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
@@ -49,22 +63,35 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
             body = err.read().decode("utf-8")
             return err.code, json.loads(body)
 
-    def _get_json(self, path: str, params: dict | None = None) -> tuple[int, dict]:
+    def _get_json(self, path: str, params: dict | None = None, admin_token: str | None = "use-default") -> tuple[int, dict]:
         url = f"{self._base_url}{path}"
         if params:
             url = f"{url}?{urlencode(params)}"
+        headers = {}
+        if path.startswith("/api/admin/"):
+            if admin_token == "use-default":
+                headers["X-Admin-Token"] = self._admin_token
+            elif admin_token:
+                headers["X-Admin-Token"] = admin_token
+        request = Request(url, headers=headers)
         try:
-            with urlopen(url) as response:
+            with urlopen(request) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))
         except HTTPError as err:
             body = err.read().decode("utf-8")
             return err.code, json.loads(body)
 
-    def _delete_json(self, path: str, params: dict | None = None) -> tuple[int, dict]:
+    def _delete_json(self, path: str, params: dict | None = None, admin_token: str | None = "use-default") -> tuple[int, dict]:
         url = f"{self._base_url}{path}"
         if params:
             url = f"{url}?{urlencode(params)}"
-        request = Request(url, method="DELETE")
+        headers = {}
+        if path.startswith("/api/admin/"):
+            if admin_token == "use-default":
+                headers["X-Admin-Token"] = self._admin_token
+            elif admin_token:
+                headers["X-Admin-Token"] = admin_token
+        request = Request(url, headers=headers, method="DELETE")
         try:
             with urlopen(request) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))
@@ -218,6 +245,11 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
         booking = db.get_booking_by_id(booking_id)
         self.assertIsNotNone(booking)
         self.assertEqual(booking["status"], "CANCELLED")
+
+    def test_admin_block_endpoints_require_token(self) -> None:
+        status, payload = self._get_json("/api/admin/blocks", admin_token=None)
+        self.assertEqual(status, 401)
+        self.assertEqual(payload.get("errorInfo", {}).get("code"), "unauthorized")
 
     def test_admin_block_crud_basic(self) -> None:
         create_status, create_payload = self._post_json(
