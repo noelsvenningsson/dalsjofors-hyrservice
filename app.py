@@ -27,6 +27,11 @@ Endpoints
 * ``POST /api/hold`` – body JSON with ``trailerType``, ``rentalType``,
   ``date`` and optional ``startTime``.  Creates a booking in status
   ``PENDING_PAYMENT`` and returns ``{bookingId: int, price: int}``.
+* ``POST /api/admin/blocks`` – body JSON with ``trailerType`` and a
+  datetime range using either ``startDatetime``/``endDatetime`` or
+  backward-compatible ``start``/``end`` aliases. If both are provided,
+  ``startDatetime``/``endDatetime`` take precedence. Returns canonical
+  block fields including ``startDatetime`` and ``endDatetime``.
 
 The server intentionally does not implement Swish QR or payment
 confirmation; those are added in later milestones.
@@ -186,6 +191,21 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- API implementations ----
 
+    def _resolve_block_datetime_fields(self, data: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+        """Resolve accepted datetime aliases for admin block payloads.
+
+        Canonical keys are ``startDatetime``/``endDatetime``.
+        Backward-compatible aliases ``start``/``end`` are also accepted.
+        If both styles are provided, canonical keys take precedence.
+        """
+        start_dt_str = data.get("startDatetime")
+        end_dt_str = data.get("endDatetime")
+        if not start_dt_str:
+            start_dt_str = data.get("start")
+        if not end_dt_str:
+            end_dt_str = data.get("end")
+        return start_dt_str, end_dt_str
+
     def handle_price(self, params: Dict[str, str]) -> None:
         trailer_type = params.get("trailerType")
         rental_type = params.get("rentalType")
@@ -329,17 +349,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.end_json(400, {"error": "Invalid JSON"})
 
         trailer_type = (data.get("trailerType") or "").upper()
-        start_dt_str = data.get("startDatetime")
-        end_dt_str = data.get("endDatetime")
+        start_dt_str, end_dt_str = self._resolve_block_datetime_fields(data)
         reason = data.get("reason") or ""
         if not trailer_type or not start_dt_str or not end_dt_str:
             return self.end_json(
                 400,
-                {"error": "trailerType, startDatetime and endDatetime are required"},
+                {
+                    "error": "trailerType and datetime range are required; use startDatetime/endDatetime or start/end"
+                },
             )
         try:
             start_dt = datetime.fromisoformat(start_dt_str)
             end_dt = datetime.fromisoformat(end_dt_str)
+        except Exception:
+            return self.end_json(
+                400,
+                {"error": "Invalid datetime format; expected ISO 8601 in startDatetime/endDatetime or start/end"},
+            )
+        if end_dt <= start_dt:
+            return self.end_json(400, {"error": "endDatetime must be after startDatetime"})
+        try:
             row = db.create_block(trailer_type, start_dt, end_dt, reason)
         except ValueError as e:
             return self.end_json(400, {"error": str(e)})
