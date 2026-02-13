@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dalsjöfors Hyrservice - Admin</title>
+  <link rel="stylesheet" href="/static/admin.css" />
+</head>
+<body>
+  <header class="site-header">
+    <h1>Admin Dashboard</h1>
+    <p>Daglig drift och bokningsöversikt</p>
+  </header>
+
+  <main class="admin-main">
+    <section class="kpi-grid" aria-label="Översikt">
+      <article class="kpi-card">
+        <p class="kpi-label">Dagens bokningar</p>
+        <p class="kpi-value" id="kpi-today">0</p>
+      </article>
+      <article class="kpi-card">
+        <p class="kpi-label">Pending</p>
+        <p class="kpi-value" id="kpi-pending">0</p>
+      </article>
+      <article class="kpi-card">
+        <p class="kpi-label">Confirmed</p>
+        <p class="kpi-value" id="kpi-confirmed">0</p>
+      </article>
+      <article class="kpi-card">
+        <p class="kpi-label">Cancelled</p>
+        <p class="kpi-value" id="kpi-cancelled">0</p>
+      </article>
+    </section>
+
+    <section class="panel" aria-label="Bokningar">
+      <div class="panel-header">
+        <h2>Bokningar</h2>
+        <button type="button" id="refresh-bookings" class="button">Uppdatera lista</button>
+      </div>
+
+      <form id="filters" class="filters" autocomplete="off">
+        <label>
+          Datum
+          <input type="date" id="filter-date" />
+        </label>
+        <label>
+          Status
+          <select id="filter-status">
+            <option value="ALL">Alla</option>
+            <option value="PENDING_PAYMENT">Pending</option>
+            <option value="CONFIRMED">Confirmed</option>
+            <option value="CANCELLED">Cancelled</option>
+          </select>
+        </label>
+        <label>
+          Släp
+          <select id="filter-trailer">
+            <option value="ALL">Alla</option>
+            <option value="GALLER">Gallersläp</option>
+            <option value="KAP">Kåpsläp</option>
+          </select>
+        </label>
+      </form>
+
+      <p id="bookings-feedback" class="feedback" role="status" aria-live="polite"></p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Referens</th>
+              <th>Släp</th>
+              <th>Tid</th>
+              <th>Status</th>
+              <th>Pris</th>
+              <th>Åtgärd</th>
+            </tr>
+          </thead>
+          <tbody id="bookings-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="Admin blockeringar">
+      <div class="panel-header">
+        <h2>Blockeringar</h2>
+        <button type="button" id="refresh-blocks" class="button">Uppdatera blockeringar</button>
+      </div>
+
+      <form id="block-form" class="filters" autocomplete="off">
+        <label>
+          Släp
+          <select id="block-trailer" required>
+            <option value="GALLER">Gallersläp</option>
+            <option value="KAP">Kåpsläp</option>
+          </select>
+        </label>
+        <label>
+          Start
+          <input type="datetime-local" id="block-start" required />
+        </label>
+        <label>
+          Slut
+          <input type="datetime-local" id="block-end" required />
+        </label>
+        <label class="full-width">
+          Orsak
+          <input type="text" id="block-reason" placeholder="Valfri notering" />
+        </label>
+        <div class="form-actions">
+          <button type="submit" class="button">Skapa blockering</button>
+        </div>
+      </form>
+
+      <p id="blocks-feedback" class="feedback" role="status" aria-live="polite"></p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Släp</th>
+              <th>Start</th>
+              <th>Slut</th>
+              <th>Orsak</th>
+              <th>Åtgärd</th>
+            </tr>
+          </thead>
+          <tbody id="blocks-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>
