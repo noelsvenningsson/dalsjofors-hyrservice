@@ -229,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.end_json(500, {"error": str(e)})
         finally:
             conn.close()
-        remaining = max(0, 2 - overlapping)
+        remaining = max(0, 1 - overlapping)
         available = remaining > 0
         return self.end_json(200, {"available": available, "remaining": remaining})
 
@@ -294,6 +294,8 @@ class Handler(BaseHTTPRequestHandler):
             booking_id, price = db.create_booking(
                 trailer_type_u, rental_type_u, start_dt, end_dt
             )
+        except db.SlotTakenError:
+            return self.end_json(409, {"error": "slot taken"})
         except ValueError as ve:
             return self.end_json(400, {"error": str(ve)})
         except Exception as e:

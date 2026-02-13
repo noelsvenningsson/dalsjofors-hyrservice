@@ -103,6 +103,10 @@ def init_db() -> None:
 VALID_TRAILER_TYPES = {"GALLER", "KAP"}
 VALID_RENTAL_TYPES = {"TWO_HOURS", "FULL_DAY"}
 
+
+class SlotTakenError(ValueError):
+    """Raised when a booking slot is already taken."""
+
 def calculate_price(start_datetime: datetime, rental_type: str, trailer_type: str) -> int:
     """Calculate the price for a booking.
 
@@ -165,8 +169,7 @@ def check_availability(
     The system maintains exactly two units of each trailer type.  This
     function queries all existing bookings of the given type with status
     other than ``CANCELLED``, counts how many overlap with the requested
-    period and returns ``True`` if less than two overlap (i.e. at least
-    one trailer is free).
+    period and returns ``True`` if no overlap exists.
 
     Args:
         trailer_type: ``"GALLER"`` or ``"KAP"``.
@@ -191,14 +194,11 @@ def check_availability(
             """,
             (trailer_type.upper(),),
         )
-        overlapping = 0
         for row in cur.fetchall():
             existing_start = _parse_iso(row[0])
             existing_end = _parse_iso(row[1])
             if _overlaps(start_datetime, end_datetime, existing_start, existing_end):
-                overlapping += 1
-                if overlapping >= 2:
-                    return False
+                return False
         return True
     finally:
         if close_conn:
@@ -228,7 +228,7 @@ def create_booking(
         A tuple ``(booking_id, price)`` for the newly created booking.
 
     Raises:
-        ValueError: If there is no availability for the requested slot.
+        SlotTakenError: If there is no availability for the requested slot.
     """
     trailer_type = trailer_type.upper()
     rental_type = rental_type.upper()
@@ -244,7 +244,7 @@ def create_booking(
         if not check_availability(trailer_type, start_datetime, end_datetime, connection=conn):
             # Roll back and raise a clean exception if fully booked
             conn.execute("ROLLBACK")
-            raise ValueError("Requested slot is fully booked")
+            raise SlotTakenError("slot taken")
         # Insert booking
         # Compute expiry timestamp 10 minutes from now for new holds.  The
         # expiry is stored as ISO 8601 (naive) string.  It will be used
