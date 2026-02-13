@@ -60,6 +60,9 @@ Use `.env.example` as the source of truth.
 - `ADMIN_TOKEN`: admin auth token for `/admin` and `/api/admin/*`
   - Required in production
   - Optional in local development (server logs a warning and admin auth is disabled)
+- `ADMIN_SESSION_SECRET`: HMAC secret for signed admin session cookies (`/admin/login`)
+  - Required if browser login/session auth should be enabled
+  - Keep this secret unique per environment
 
 ## Deployment Notes (Render)
 
@@ -76,6 +79,7 @@ Environment variables in Render:
 - `PORT` is provided by Render
 - Set `SWISH_PAYEE` explicitly in Render dashboard
 - Set `ADMIN_TOKEN` (required for production)
+- Set `ADMIN_SESSION_SECRET` (required for `/admin/login` session cookies)
 
 SQLite note:
 - App stores data in local `database.db`.
@@ -107,8 +111,15 @@ Recent migrations and behavior updates are auto-applied by `db.init_db()`:
 All responses are JSON.
 
 Admin auth:
-- `/admin` and all `/api/admin/*` endpoints require request header `X-Admin-Token: <ADMIN_TOKEN>` when `ADMIN_TOKEN` is configured.
-- Missing or invalid token returns `401`.
+- `/admin` and all `/api/admin/*` endpoints are protected when `ADMIN_TOKEN` is configured.
+- Access is allowed if either:
+  - `X-Admin-Token: <ADMIN_TOKEN>` header matches, or
+  - a valid signed `admin_session` cookie exists (created by `POST /admin/login`)
+- Browser login endpoints:
+  - `GET /admin/login` (HTML form)
+  - `POST /admin/login` (creates signed session cookie, ~8h max age)
+  - `POST /admin/logout` (clears session cookie)
+- Missing or invalid auth returns `401` for `/api/admin/*`.
 
 Error responses use a stable structure with a legacy-compatible string:
 

@@ -10,7 +10,10 @@
   <header class="site-header">
     <h1>Admin Dashboard</h1>
     <p>Daglig drift och bokningsöversikt</p>
-    <p>Åtkomst kräver admin-token (`X-Admin-Token`).</p>
+    <p>Inloggning fungerar med admin-token eller aktiv adminsession.</p>
+    <form method="post" action="/admin/logout">
+      <button type="submit" class="button">Logga ut</button>
+    </form>
   </header>
 
   <main class="admin-main">
