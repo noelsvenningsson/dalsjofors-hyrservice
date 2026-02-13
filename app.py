@@ -218,6 +218,8 @@ class Handler(BaseHTTPRequestHandler):
         # Root page
         if path in ("/", ""):
             return self.serve_file("index.html", "text/html; charset=utf-8")
+        if path == "/admin":
+            return self.serve_file("admin.html", "text/html; charset=utf-8")
 
         # Serve static assets under /static
         if path.startswith("/static/"):
