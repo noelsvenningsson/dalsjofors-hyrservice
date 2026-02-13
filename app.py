@@ -52,6 +52,7 @@ import logging
 import os
 import re
 import urllib.parse
+import hmac
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -67,6 +68,37 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 logger = logging.getLogger(__name__)
 NOTIFIER = notifications.create_notification_service_from_env()
+_ADMIN_TOKEN_WARNING_EMITTED = False
+
+
+def is_production_environment() -> bool:
+    """Best-effort check for production runtime."""
+    env_name = (
+        os.environ.get("APP_ENV")
+        or os.environ.get("ENV")
+        or os.environ.get("PYTHON_ENV")
+        or ""
+    ).strip().lower()
+    if env_name in {"production", "prod"}:
+        return True
+    render_flag = (os.environ.get("RENDER") or "").strip().lower()
+    return render_flag in {"1", "true", "yes"}
+
+
+def get_admin_token() -> str:
+    return (os.environ.get("ADMIN_TOKEN") or "").strip()
+
+
+def _warn_admin_auth_disabled_once() -> None:
+    """Warn once when admin auth is disabled in local development."""
+    global _ADMIN_TOKEN_WARNING_EMITTED
+    if _ADMIN_TOKEN_WARNING_EMITTED:
+        return
+    _ADMIN_TOKEN_WARNING_EMITTED = True
+    logger.warning(
+        "ADMIN_TOKEN is not set; admin auth is disabled for local development. "
+        "Set ADMIN_TOKEN to protect /admin and /api/admin/* routes."
+    )
 
 
 def parse_query(query: str) -> Dict[str, str]:
@@ -92,6 +124,59 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def end_html_message(self, code: int, title: str, message: str) -> None:
+        body = (
+            "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+            f"<title>{title}</title></head><body>"
+            f"<h1>{title}</h1><p>{message}</p></body></html>"
+        ).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def require_admin_auth(self, *, html: bool) -> bool:
+        expected_token = get_admin_token()
+        if not expected_token:
+            if is_production_environment():
+                if html:
+                    self.end_html_message(
+                        500,
+                        "Server Misconfigured",
+                        "ADMIN_TOKEN is required in production.",
+                    )
+                else:
+                    self.api_error(
+                        500,
+                        "server_misconfigured",
+                        "Server misconfigured",
+                        legacy_error="Server misconfigured",
+                    )
+                return False
+            _warn_admin_auth_disabled_once()
+            return True
+
+        provided_token = (self.headers.get("X-Admin-Token") or "").strip()
+        if hmac.compare_digest(provided_token, expected_token):
+            return True
+
+        if html:
+            self.end_html_message(
+                401,
+                "Unauthorized",
+                "Admin token is required. Provide X-Admin-Token to access this page.",
+            )
+        else:
+            self.api_error(
+                401,
+                "unauthorized",
+                "Unauthorized",
+                legacy_error="Unauthorized",
+            )
+        return False
 
     def api_error(
         self,
@@ -219,6 +304,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", ""):
             return self.serve_file("index.html", "text/html; charset=utf-8")
         if path == "/admin":
+            if not self.require_admin_auth(html=True):
+                return
             return self.serve_file("admin.html", "text/html; charset=utf-8")
 
         # Serve static assets under /static
@@ -233,6 +320,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_availability(query_params)
         if path == "/api/payment":
             return self.handle_payment(query_params)
+        if path.startswith("/api/admin/"):
+            if not self.require_admin_auth(html=False):
+                return
         if path == "/api/admin/bookings":
             return self.handle_admin_bookings(query_params)
         if path == "/api/admin/blocks":
@@ -280,6 +370,9 @@ class Handler(BaseHTTPRequestHandler):
         # Handle Swish Commerce callback
         if path == "/api/swish/callback":
             return self.handle_swish_callback()
+        if path.startswith("/api/admin/"):
+            if not self.require_admin_auth(html=False):
+                return
         if path == "/api/admin/blocks":
             return self.handle_admin_blocks_create()
         if path == "/api/admin/expire-pending":
@@ -297,6 +390,9 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        if path.startswith("/api/admin/"):
+            if not self.require_admin_auth(html=False):
+                return
         if path == "/api/admin/blocks":
             return self.handle_admin_blocks_delete(query_params)
         return self.end_json(404, {"error": "Not Found"})
@@ -1050,6 +1146,10 @@ class Handler(BaseHTTPRequestHandler):
 def run() -> None:
     # Initialise database on startup
     db.init_db()
+    if is_production_environment() and not get_admin_token():
+        raise RuntimeError("ADMIN_TOKEN is required in production environments")
+    if not is_production_environment() and not get_admin_token():
+        _warn_admin_auth_disabled_once()
     port = int(os.environ.get("PORT", "8000"))
     server = HTTPServer(("0.0.0.0", port), Handler)
     print(f"Running Dalsjöfors Hyrservice on http://localhost:{port}")

@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import threading
 import unittest
@@ -19,6 +20,9 @@ class BookingReferenceFlowTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._tmpdir = TemporaryDirectory()
         cls._original_db_path = db.DB_PATH
+        cls._original_admin_token = os.environ.get("ADMIN_TOKEN")
+        cls._admin_token = "test-admin-token"
+        os.environ["ADMIN_TOKEN"] = cls._admin_token
         db.DB_PATH = Path(cls._tmpdir.name) / "test_database.db"
         db.init_db()
 
@@ -32,6 +36,10 @@ class BookingReferenceFlowTest(unittest.TestCase):
         cls._server.shutdown()
         cls._server.server_close()
         cls._thread.join(timeout=2)
+        if cls._original_admin_token is None:
+            os.environ.pop("ADMIN_TOKEN", None)
+        else:
+            os.environ["ADMIN_TOKEN"] = cls._original_admin_token
         db.DB_PATH = cls._original_db_path
         cls._tmpdir.cleanup()
 
@@ -53,8 +61,12 @@ class BookingReferenceFlowTest(unittest.TestCase):
         url = f"{self._base_url}{path}"
         if params:
             url = f"{url}?{urlencode(params)}"
+        headers = {}
+        if path.startswith("/api/admin/"):
+            headers["X-Admin-Token"] = self._admin_token
+        request = Request(url, headers=headers)
         try:
-            with urlopen(url) as response:
+            with urlopen(request) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))
         except HTTPError as err:
             body = err.read().decode("utf-8")

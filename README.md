@@ -57,6 +57,9 @@ Use `.env.example` as the source of truth.
 - `SWISH_PAYEE`: Swish payee number used when creating payment payloads
 - `NOTIFY_WEBHOOK_URL`: optional webhook endpoint for booking notifications
 - `NOTIFY_WEBHOOK_SECRET`: optional HMAC secret for webhook signature header
+- `ADMIN_TOKEN`: admin auth token for `/admin` and `/api/admin/*`
+  - Required in production
+  - Optional in local development (server logs a warning and admin auth is disabled)
 
 ## Deployment Notes (Render)
 
@@ -72,6 +75,7 @@ Suggested settings:
 Environment variables in Render:
 - `PORT` is provided by Render
 - Set `SWISH_PAYEE` explicitly in Render dashboard
+- Set `ADMIN_TOKEN` (required for production)
 
 SQLite note:
 - App stores data in local `database.db`.
@@ -101,6 +105,10 @@ Recent migrations and behavior updates are auto-applied by `db.init_db()`:
 ## API Quick Reference
 
 All responses are JSON.
+
+Admin auth:
+- `/admin` and all `/api/admin/*` endpoints require request header `X-Admin-Token: <ADMIN_TOKEN>` when `ADMIN_TOKEN` is configured.
+- Missing or invalid token returns `401`.
 
 Error responses use a stable structure with a legacy-compatible string:
 
@@ -189,6 +197,9 @@ Required inputs (JSON body):
   - `startDatetime` + `endDatetime`, or
   - `start` + `end`
 
+Required header:
+- `X-Admin-Token`
+
 Example success (`201`):
 
 ```json
@@ -212,6 +223,8 @@ Common errors:
 Required inputs:
 - None
 - Optional query params: `startDatetime`, `endDatetime` (for range filtering)
+Required header:
+- `X-Admin-Token`
 
 Example success (`200`):
 
@@ -238,6 +251,8 @@ Common errors:
 
 Required inputs:
 - Query param: `id` (integer)
+Required header:
+- `X-Admin-Token`
 
 Example success (`200`):
 
