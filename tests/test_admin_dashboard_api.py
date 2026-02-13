@@ -59,11 +59,12 @@ class AdminDashboardApiTest(unittest.TestCase):
             body = err.read().decode("utf-8")
             return err.code, json.loads(body)
 
-    def test_admin_page_requires_token(self) -> None:
-        with self.assertRaises(HTTPError) as ctx:
-            urlopen(f"{self._base_url}/admin")
-        self.assertEqual(ctx.exception.code, 401)
-        self.assertIn("Admin token is required", ctx.exception.read().decode("utf-8"))
+    def test_admin_page_without_token_redirects_to_login(self) -> None:
+        with urlopen(f"{self._base_url}/admin") as response:
+            self.assertEqual(response.status, 200)
+            html = response.read().decode("utf-8")
+        self.assertIn("Admin inloggning", html)
+        self.assertIn("Logga in", html)
 
     def test_admin_page_serves_html(self) -> None:
         request = Request(

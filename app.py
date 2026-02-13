@@ -53,7 +53,12 @@ import os
 import re
 import urllib.parse
 import hmac
+import hashlib
+import html as html_lib
+import time
+import base64
 from datetime import datetime, timedelta
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -69,6 +74,8 @@ TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 logger = logging.getLogger(__name__)
 NOTIFIER = notifications.create_notification_service_from_env()
 _ADMIN_TOKEN_WARNING_EMITTED = False
+ADMIN_SESSION_COOKIE_NAME = "admin_session"
+ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 
 
 def is_production_environment() -> bool:
@@ -87,6 +94,10 @@ def is_production_environment() -> bool:
 
 def get_admin_token() -> str:
     return (os.environ.get("ADMIN_TOKEN") or "").strip()
+
+
+def get_admin_session_secret() -> str:
+    return (os.environ.get("ADMIN_SESSION_SECRET") or "").strip()
 
 
 def _warn_admin_auth_disabled_once() -> None:
@@ -138,6 +149,184 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _request_is_https(self) -> bool:
+        forwarded_proto = (self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+        if forwarded_proto == "https":
+            return True
+        forwarded = (self.headers.get("Forwarded") or "").lower()
+        if "proto=https" in forwarded:
+            return True
+        return bool(getattr(self.connection, "cipher", None))
+
+    def _send_redirect(self, location: str, *, set_cookie: Optional[str] = None) -> None:
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        if set_cookie:
+            self.send_header("Set-Cookie", set_cookie)
+        self.end_headers()
+
+    def _admin_session_cookie_value(self, expected_token: str) -> Optional[str]:
+        secret = get_admin_session_secret()
+        if not secret:
+            return None
+        expires_at = int(time.time()) + ADMIN_SESSION_MAX_AGE_SECONDS
+        token_hash = hashlib.sha256(expected_token.encode("utf-8")).hexdigest()
+        payload = f"v1|{expires_at}|{token_hash}"
+        signature = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        payload_b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+        return f"{payload_b64}.{signature}"
+
+    def _admin_session_cookie_header(self, session_value: str) -> str:
+        parts = [
+            f"{ADMIN_SESSION_COOKIE_NAME}={session_value}",
+            "Path=/",
+            f"Max-Age={ADMIN_SESSION_MAX_AGE_SECONDS}",
+            "HttpOnly",
+            "SameSite=Lax",
+        ]
+        if self._request_is_https():
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    def _clear_admin_session_cookie_header(self) -> str:
+        parts = [
+            f"{ADMIN_SESSION_COOKIE_NAME}=",
+            "Path=/",
+            "Max-Age=0",
+            "HttpOnly",
+            "SameSite=Lax",
+        ]
+        if self._request_is_https():
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    def _has_valid_admin_session_cookie(self, expected_token: str) -> bool:
+        secret = get_admin_session_secret()
+        if not secret:
+            return False
+        cookie_header = self.headers.get("Cookie")
+        if not cookie_header:
+            return False
+        try:
+            cookies = SimpleCookie()
+            cookies.load(cookie_header)
+        except Exception:
+            return False
+        morsel = cookies.get(ADMIN_SESSION_COOKIE_NAME)
+        if morsel is None:
+            return False
+        raw_value = morsel.value
+        if "." not in raw_value:
+            return False
+        payload_b64, signature = raw_value.split(".", 1)
+        if not payload_b64 or not signature:
+            return False
+        try:
+            payload_bytes = base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
+            payload = payload_bytes.decode("utf-8")
+        except Exception:
+            return False
+        expected_sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected_sig):
+            return False
+        parts = payload.split("|")
+        if len(parts) != 3 or parts[0] != "v1":
+            return False
+        try:
+            expires_at = int(parts[1])
+        except ValueError:
+            return False
+        if int(time.time()) > expires_at:
+            return False
+        expected_token_hash = hashlib.sha256(expected_token.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(parts[2], expected_token_hash)
+
+    def _admin_login_html(self, *, error_message: Optional[str] = None) -> bytes:
+        escaped_error = html_lib.escape(error_message) if error_message else ""
+        error_block = f"<p style='color:#a60000;font-weight:600'>{escaped_error}</p>" if escaped_error else ""
+        page = f"""
+<!doctype html><html lang="sv"><head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin inloggning</title>
+  <style>
+    body {{ font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #f4f7fa; color: #1f2b37; }}
+    main {{ max-width: 440px; margin: 48px auto; padding: 0 16px; }}
+    .card {{ background: #fff; border: 1px solid #dbe5ee; border-radius: 12px; padding: 20px; box-shadow: 0 8px 28px rgba(18, 35, 52, 0.08); }}
+    label {{ display: block; margin-bottom: 8px; font-weight: 600; }}
+    input {{ width: 100%; padding: 10px; border: 1px solid #c9d6e2; border-radius: 8px; font-size: 16px; }}
+    button {{ margin-top: 14px; width: 100%; border: 0; border-radius: 8px; padding: 11px 14px; background: #1f4f7d; color: #fff; font-weight: 700; font-size: 16px; cursor: pointer; }}
+    p {{ line-height: 1.45; }}
+  </style>
+</head><body>
+<main>
+  <div class="card">
+    <h1>Admin</h1>
+    <p>Logga in med din admin-token för att öppna adminpanelen i webbläsaren.</p>
+    {error_block}
+    <form method="post" action="/admin/login">
+      <label for="token">Admin-token</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" required />
+      <button type="submit">Logga in</button>
+    </form>
+  </div>
+</main>
+</body></html>
+"""
+        return page.encode("utf-8")
+
+    def handle_admin_login_get(self) -> None:
+        expected_token = get_admin_token()
+        if not expected_token:
+            if is_production_environment():
+                return self.end_html_message(500, "Server Misconfigured", "ADMIN_TOKEN is required in production.")
+            _warn_admin_auth_disabled_once()
+            return self._send_redirect("/admin")
+        body = self._admin_login_html()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def handle_admin_login_post(self) -> None:
+        expected_token = get_admin_token()
+        if not expected_token:
+            if is_production_environment():
+                return self.end_html_message(500, "Server Misconfigured", "ADMIN_TOKEN is required in production.")
+            _warn_admin_auth_disabled_once()
+            return self._send_redirect("/admin")
+        session_value = self._admin_session_cookie_value(expected_token)
+        if not session_value:
+            return self.end_html_message(
+                500,
+                "Server Misconfigured",
+                "ADMIN_SESSION_SECRET is required for admin login sessions.",
+            )
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = 0
+        raw = self.rfile.read(content_length) if content_length > 0 else b""
+        form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+        provided_token = (form.get("token", [""])[0] or "").strip()
+        if not hmac.compare_digest(provided_token, expected_token):
+            body = self._admin_login_html(error_message="Fel token. Försök igen.")
+            self.send_response(401)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        cookie_header = self._admin_session_cookie_header(session_value)
+        return self._send_redirect("/admin", set_cookie=cookie_header)
+
+    def handle_admin_logout_post(self) -> None:
+        return self._send_redirect("/admin/login", set_cookie=self._clear_admin_session_cookie_header())
+
     def require_admin_auth(self, *, html: bool) -> bool:
         expected_token = get_admin_token()
         if not expected_token:
@@ -162,13 +351,11 @@ class Handler(BaseHTTPRequestHandler):
         provided_token = (self.headers.get("X-Admin-Token") or "").strip()
         if hmac.compare_digest(provided_token, expected_token):
             return True
+        if self._has_valid_admin_session_cookie(expected_token):
+            return True
 
         if html:
-            self.end_html_message(
-                401,
-                "Unauthorized",
-                "Admin token is required. Provide X-Admin-Token to access this page.",
-            )
+            self._send_redirect("/admin/login")
         else:
             self.api_error(
                 401,
@@ -303,6 +490,8 @@ class Handler(BaseHTTPRequestHandler):
         # Root page
         if path in ("/", ""):
             return self.serve_file("index.html", "text/html; charset=utf-8")
+        if path == "/admin/login":
+            return self.handle_admin_login_get()
         if path == "/admin":
             if not self.require_admin_auth(html=True):
                 return
@@ -370,6 +559,10 @@ class Handler(BaseHTTPRequestHandler):
         # Handle Swish Commerce callback
         if path == "/api/swish/callback":
             return self.handle_swish_callback()
+        if path == "/admin/login":
+            return self.handle_admin_login_post()
+        if path == "/admin/logout":
+            return self.handle_admin_logout_post()
         if path.startswith("/api/admin/"):
             if not self.require_admin_auth(html=False):
                 return
@@ -749,7 +942,16 @@ class Handler(BaseHTTPRequestHandler):
         price = details["price"]
         qr_url = details["qrUrl"]
         message = details["swishMessage"]
+        payload = details["payload"]
         booking_reference = details.get("bookingReference")
+        payee = os.environ.get("SWISH_PAYEE", "1234945580")
+        amount_dot = f"{price:.2f}"
+        deep_link_candidates = [
+            f"swish://payment?payee={urllib.parse.quote(payee, safe='')}"
+            f"&amount={urllib.parse.quote(amount_dot, safe='')}"
+            f"&message={urllib.parse.quote(message, safe='')}",
+            f"swish://payment?data={urllib.parse.quote(payload, safe='')}",
+        ]
         # Compose payment page with polished styling; no booking/payment behavior changes.
         html = f"""
 <!doctype html><html lang=\"sv\"><head>
@@ -825,6 +1027,43 @@ class Handler(BaseHTTPRequestHandler):
       background: #fff;
       padding: 10px;
     }}
+    .swish-actions {{
+      margin-top: 12px;
+      display: grid;
+      gap: 8px;
+    }}
+    .swish-open-btn {{
+      border: 0;
+      border-radius: 12px;
+      padding: 13px 14px;
+      background: #107443;
+      color: #fff;
+      font-weight: 700;
+      font-size: 1rem;
+      cursor: pointer;
+    }}
+    .swish-open-btn:hover,
+    .swish-open-btn:focus-visible {{
+      background: #0e653a;
+    }}
+    .swish-help {{
+      color: var(--muted);
+      margin: 2px 0 0;
+    }}
+    .swish-fallback {{
+      display: none;
+      margin-top: 2px;
+      color: #8a4c00;
+      background: #fff6e8;
+      border: 1px solid #f0d19f;
+      border-radius: 10px;
+      padding: 9px 10px;
+    }}
+    .qr-alt {{
+      margin-top: 14px;
+      font-weight: 600;
+      color: #2c5377;
+    }}
     .waiting {{
       display: flex;
       align-items: center;
@@ -855,10 +1094,16 @@ class Handler(BaseHTTPRequestHandler):
     <p>Scanna QR-koden i din Swish-app. Belopp och meddelande är förifyllda.</p>
     <div class=\"meta\">
       <p><strong>Belopp:</strong> {price} kr</p>
-      <p><strong>Mottagare:</strong> 1234 945580</p>
-      <p><strong>Meddelande:</strong> {message}</p>
-      <p><strong>Bokningsreferens:</strong> {booking_reference or "saknas"}</p>
+      <p><strong>Mottagare:</strong> {html_lib.escape(payee)}</p>
+      <p><strong>Meddelande:</strong> {html_lib.escape(message)}</p>
+      <p><strong>Bokningsreferens:</strong> {html_lib.escape(booking_reference or "saknas")}</p>
     </div>
+    <div class=\"swish-actions\">
+      <button id=\"open-swish\" type=\"button\" class=\"swish-open-btn\">Öppna i Swish</button>
+      <p class=\"swish-help\" id=\"swish-help\">Öppna Swish på den här enheten för snabb betalning.</p>
+      <p class=\"swish-fallback\" id=\"swish-fallback\">Swish öppnades inte automatiskt. Fortsätt genom att scanna QR-koden nedan.</p>
+    </div>
+    <p class=\"qr-alt\">Använd Swish på annan enhet</p>
     <div class=\"qr-wrap\">
       <img src=\"{qr_url}\" alt=\"Swish QR\" width=\"320\" height=\"320\" />
     </div>
@@ -873,6 +1118,46 @@ class Handler(BaseHTTPRequestHandler):
   <p>Dalsjöfors Hyrservice AB • Org.nr: 559062-4556 • Momsnr: SE559062455601 • Adress: Boråsvägen 58B, 516 34 Dalsjöfors • Telefon: 070‑457 97 09</p>
   <p>Frågor eller problem? Ring <strong>070‑457 97 09</strong></p>
 </footer>
+<script>
+  const swishLinks = {json.dumps(deep_link_candidates, ensure_ascii=False)};
+  const openBtn = document.getElementById("open-swish");
+  const helpText = document.getElementById("swish-help");
+  const fallbackText = document.getElementById("swish-fallback");
+  const isTouch = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+  const isMobileUA = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+  const isMobileContext = isTouch || isMobileUA;
+
+  if (isMobileContext) {{
+    openBtn.textContent = "Öppna i Swish";
+    helpText.textContent = "Tryck för att öppna Swish. Om appen inte öppnas kan du använda QR-koden.";
+  }} else {{
+    openBtn.textContent = "Försök öppna Swish här";
+    helpText.textContent = "På dator fungerar oftast QR-koden bäst. Du kan ändå prova att öppna Swish.";
+  }}
+
+  function showFallbackInstruction() {{
+    fallbackText.style.display = "block";
+  }}
+
+  openBtn.addEventListener("click", () => {{
+    if (!swishLinks.length) {{
+      showFallbackInstruction();
+      return;
+    }}
+    fallbackText.style.display = "none";
+    window.location.href = swishLinks[0];
+    setTimeout(() => {{
+      if (document.visibilityState === "visible" && swishLinks[1]) {{
+        window.location.href = swishLinks[1];
+      }}
+    }}, 500);
+    setTimeout(() => {{
+      if (document.visibilityState === "visible") {{
+        showFallbackInstruction();
+      }}
+    }}, 1200);
+  }});
+</script>
 </body></html>
 """
         body = html.encode("utf-8")
