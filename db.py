@@ -39,9 +39,10 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, date, time, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 DB_PATH = Path(__file__).resolve().parent / "database.db"
+PENDING_PAYMENT_EXPIRATION_MINUTES = 15
 
 
 def init_db() -> None:
@@ -58,6 +59,7 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS bookings (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            booking_reference TEXT UNIQUE,
             trailer_type  TEXT NOT NULL CHECK (trailer_type IN ('GALLER','KAP')),
             rental_type   TEXT NOT NULL CHECK (rental_type IN ('TWO_HOURS','FULL_DAY')),
             start_dt      TEXT NOT NULL,
@@ -71,6 +73,18 @@ def init_db() -> None:
             -- pending bookings (ISO format, naive local time).
             , swish_id    TEXT
             , expires_at  TEXT
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS trailer_blocks (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            trailer_type TEXT NOT NULL CHECK (trailer_type IN ('GALLER','KAP')),
+            start_dt    TEXT NOT NULL,
+            end_dt      TEXT NOT NULL,
+            reason      TEXT NOT NULL,
+            created_at  TEXT NOT NULL
         );
         """
     )
@@ -97,11 +111,43 @@ def init_db() -> None:
         conn.execute("ALTER TABLE bookings ADD COLUMN expires_at TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE bookings ADD COLUMN booking_reference TEXT")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_booking_reference
+        ON bookings (booking_reference)
+        WHERE booking_reference IS NOT NULL
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_trailer_blocks_type_start_end
+        ON trailer_blocks (trailer_type, start_dt, end_dt)
+        """
+    )
     conn.commit()
     conn.close()
 
+VALID_TRAILER_TYPES = {"GALLER", "KAP"}
+VALID_RENTAL_TYPES = {"TWO_HOURS", "FULL_DAY"}
 
-def calculate_price(start_datetime: datetime, rental_type: str) -> int:
+
+class SlotTakenError(ValueError):
+    """Raised when a booking slot is already taken."""
+
+
+class SlotBlockedError(ValueError):
+    """Raised when a booking slot is blocked by admin."""
+
+    def __init__(self, block: dict):
+        super().__init__("slot blocked")
+        self.block = block
+
+
+def calculate_price(start_datetime: datetime, rental_type: str, trailer_type: str) -> int:
     """Calculate the price for a booking.
 
     Two‑hour rentals always cost 200 SEK.  Full day rentals cost 250 SEK
@@ -113,11 +159,15 @@ def calculate_price(start_datetime: datetime, rental_type: str) -> int:
     Args:
         start_datetime: The start of the hire period.
         rental_type: ``"TWO_HOURS"`` or ``"FULL_DAY"``.
+        trailer_type: ``"GALLER"`` or ``"KAP"``.
 
     Returns:
         The price in Swedish kronor as an integer.
     """
     rental_type = rental_type.upper()
+    trailer_type = trailer_type.upper()
+    if trailer_type not in VALID_TRAILER_TYPES:
+        raise ValueError(f"Unknown trailer type: {trailer_type}")
     if rental_type == "TWO_HOURS":
         return 200
     if rental_type != "FULL_DAY":
@@ -148,6 +198,106 @@ def _overlaps(a_start: datetime, a_end: datetime, b_start: datetime, b_end: date
     return a_start < b_end and b_start < a_end
 
 
+def _active_booking_where_clause() -> str:
+    """SQL condition for bookings that should block availability."""
+    return (
+        "("
+        "status = 'CONFIRMED' "
+        "OR (status = 'PENDING_PAYMENT' AND (expires_at IS NULL OR expires_at >= ?))"
+        ")"
+    )
+
+
+def find_block_overlap(
+    trailer_type: str,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    connection: Optional[sqlite3.Connection] = None,
+) -> Optional[dict]:
+    """Return the first overlapping admin block for the requested slot."""
+    close_conn = False
+    if connection is None:
+        connection = sqlite3.connect(DB_PATH)
+        close_conn = True
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            """
+            SELECT id, trailer_type, start_dt, end_dt, reason, created_at
+            FROM trailer_blocks
+            WHERE trailer_type = ?
+              AND start_dt < ?
+              AND ? < end_dt
+            ORDER BY start_dt
+            LIMIT 1
+            """,
+            (
+                trailer_type.upper(),
+                end_datetime.isoformat(timespec="minutes"),
+                start_datetime.isoformat(timespec="minutes"),
+            ),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            connection.close()
+
+
+def count_overlapping_active_bookings(
+    trailer_type: str,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    connection: Optional[sqlite3.Connection] = None,
+    now: Optional[datetime] = None,
+) -> int:
+    """Count bookings that block availability for the requested slot."""
+    if now is None:
+        now = datetime.now()
+    close_conn = False
+    if connection is None:
+        connection = sqlite3.connect(DB_PATH)
+        close_conn = True
+    try:
+        row = connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM bookings
+            WHERE trailer_type = ?
+              AND {_active_booking_where_clause()}
+              AND (start_dt < ? AND ? < end_dt)
+            """,
+            (
+                trailer_type.upper(),
+                now.isoformat(timespec="seconds"),
+                end_datetime.isoformat(timespec="minutes"),
+                start_datetime.isoformat(timespec="minutes"),
+            ),
+        ).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        if close_conn:
+            connection.close()
+
+
+def get_availability_conflict(
+    trailer_type: str,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    connection: Optional[sqlite3.Connection] = None,
+    now: Optional[datetime] = None,
+) -> Optional[dict[str, Any]]:
+    """Return details about what blocks availability, if anything."""
+    block = find_block_overlap(trailer_type, start_datetime, end_datetime, connection=connection)
+    if block:
+        return {"type": "BLOCK", "block": block}
+    overlaps = count_overlapping_active_bookings(
+        trailer_type, start_datetime, end_datetime, connection=connection, now=now
+    )
+    if overlaps > 0:
+        return {"type": "BOOKING", "overlaps": overlaps}
+    return None
+
+
 def check_availability(
     trailer_type: str,
     start_datetime: datetime,
@@ -159,8 +309,7 @@ def check_availability(
     The system maintains exactly two units of each trailer type.  This
     function queries all existing bookings of the given type with status
     other than ``CANCELLED``, counts how many overlap with the requested
-    period and returns ``True`` if less than two overlap (i.e. at least
-    one trailer is free).
+    period and returns ``True`` if no overlap exists.
 
     Args:
         trailer_type: ``"GALLER"`` or ``"KAP"``.
@@ -172,31 +321,13 @@ def check_availability(
     Returns:
         ``True`` if the booking can be accommodated, ``False`` otherwise.
     """
-    close_conn = False
-    if connection is None:
-        connection = sqlite3.connect(DB_PATH)
-        close_conn = True
-    try:
-        cur = connection.execute(
-            """
-            SELECT start_dt, end_dt
-            FROM bookings
-            WHERE trailer_type = ? AND status != 'CANCELLED'
-            """,
-            (trailer_type.upper(),),
-        )
-        overlapping = 0
-        for row in cur.fetchall():
-            existing_start = _parse_iso(row[0])
-            existing_end = _parse_iso(row[1])
-            if _overlaps(start_datetime, end_datetime, existing_start, existing_end):
-                overlapping += 1
-                if overlapping >= 2:
-                    return False
-        return True
-    finally:
-        if close_conn:
-            connection.close()
+    conflict = get_availability_conflict(
+        trailer_type,
+        start_datetime,
+        end_datetime,
+        connection=connection,
+    )
+    return conflict is None
 
 
 def create_booking(
@@ -204,12 +335,11 @@ def create_booking(
     rental_type: str,
     start_datetime: datetime,
     end_datetime: datetime,
-    price: Optional[int] = None,
 ) -> Tuple[int, int]:
     """Attempt to create a new booking and return its ID and price.
 
     The function runs in a single database transaction.  It first
-    recalculates the price (unless provided) and checks availability.  If
+    recalculates the price and checks availability.  If
     no trailer is free the function raises ``ValueError``.  Otherwise it
     inserts a new booking with status ``PENDING_PAYMENT`` and returns
     ``(booking_id, price)``.
@@ -219,19 +349,15 @@ def create_booking(
         rental_type: ``"TWO_HOURS"`` or ``"FULL_DAY"``.
         start_datetime: Inclusive start of the hire.
         end_datetime: Exclusive end of the hire.
-        price: Optional precomputed price.  If ``None`` the price is
-            calculated from ``start_datetime`` and ``rental_type``.
-
     Returns:
         A tuple ``(booking_id, price)`` for the newly created booking.
 
     Raises:
-        ValueError: If there is no availability for the requested slot.
+        SlotTakenError: If there is no availability for the requested slot.
     """
     trailer_type = trailer_type.upper()
     rental_type = rental_type.upper()
-    if price is None:
-        price = calculate_price(start_datetime, rental_type)
+    price = calculate_price(start_datetime, rental_type, trailer_type)
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.isolation_level = None  # Use manual transaction management
@@ -240,20 +366,32 @@ def create_booking(
         conn.execute("BEGIN IMMEDIATE")
         # Recheck availability within the transaction.  Use the same
         # connection so the SELECT sees any uncommitted inserts (none yet).
-        if not check_availability(trailer_type, start_datetime, end_datetime, connection=conn):
-            # Roll back and raise a clean exception if fully booked
+        conflict = get_availability_conflict(
+            trailer_type,
+            start_datetime,
+            end_datetime,
+            connection=conn,
+            now=datetime.now(),
+        )
+        if conflict:
+            # Roll back and raise a clean exception if unavailable
             conn.execute("ROLLBACK")
-            raise ValueError("Requested slot is fully booked")
+            if conflict["type"] == "BLOCK":
+                raise SlotBlockedError(conflict["block"])
+            raise SlotTakenError("slot taken")
         # Insert booking
-        # Compute expiry timestamp 10 minutes from now for new holds.  The
+        # Compute expiry timestamp for new holds.  The
         # expiry is stored as ISO 8601 (naive) string.  It will be used
         # later to cancel expired reservations.
-        expires_at = (datetime.now() + timedelta(minutes=10)).isoformat(timespec="seconds")
+        created_at = datetime.now()
+        expires_at = (
+            created_at + timedelta(minutes=PENDING_PAYMENT_EXPIRATION_MINUTES)
+        ).isoformat(timespec="seconds")
 
         cur = conn.execute(
             """
-            INSERT INTO bookings (trailer_type, rental_type, start_dt, end_dt, price, status, created_at, swish_id, expires_at)
-            VALUES (?, ?, ?, ?, ?, 'PENDING_PAYMENT', ?, NULL, ?)
+            INSERT INTO bookings (booking_reference, trailer_type, rental_type, start_dt, end_dt, price, status, created_at, swish_id, expires_at)
+            VALUES (NULL, ?, ?, ?, ?, ?, 'PENDING_PAYMENT', ?, NULL, ?)
             """,
             (
                 trailer_type,
@@ -261,11 +399,20 @@ def create_booking(
                 start_datetime.isoformat(timespec="minutes"),
                 end_datetime.isoformat(timespec="minutes"),
                 price,
-                datetime.now().isoformat(timespec="seconds"),
+                created_at.isoformat(timespec="seconds"),
                 expires_at,
             ),
         )
         booking_id = cur.lastrowid
+        booking_reference = _generate_booking_reference(created_at, booking_id)
+        conn.execute(
+            """
+            UPDATE bookings
+            SET booking_reference = ?
+            WHERE id = ?
+            """,
+            (booking_reference, booking_id),
+        )
         conn.execute("COMMIT")
         return booking_id, price
     except Exception:
@@ -276,6 +423,92 @@ def create_booking(
         except sqlite3.OperationalError:
             pass
         raise
+    finally:
+        conn.close()
+
+
+def create_block(
+    trailer_type: str,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    reason: str,
+) -> dict:
+    """Create an admin block row and return it."""
+    trailer_type_u = trailer_type.upper()
+    if trailer_type_u not in VALID_TRAILER_TYPES:
+        raise ValueError("Invalid trailerType")
+    if end_datetime <= start_datetime:
+        raise ValueError("endDatetime must be after startDatetime")
+    created_at = datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO trailer_blocks (trailer_type, start_dt, end_dt, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                trailer_type_u,
+                start_datetime.isoformat(timespec="minutes"),
+                end_datetime.isoformat(timespec="minutes"),
+                reason or "",
+                created_at,
+            ),
+        )
+        block_id = cur.lastrowid
+        conn.commit()
+        row = conn.execute(
+            """
+            SELECT id, trailer_type, start_dt, end_dt, reason, created_at
+            FROM trailer_blocks
+            WHERE id = ?
+            """,
+            (block_id,),
+        ).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def list_blocks(start_datetime: Optional[datetime] = None, end_datetime: Optional[datetime] = None) -> list[dict]:
+    """List admin blocks, optionally filtering by overlap with a range."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        query = """
+            SELECT id, trailer_type, start_dt, end_dt, reason, created_at
+            FROM trailer_blocks
+        """
+        params: list[str] = []
+        if start_datetime and end_datetime:
+            query += " WHERE start_dt < ? AND ? < end_dt"
+            params.extend(
+                [
+                    end_datetime.isoformat(timespec="minutes"),
+                    start_datetime.isoformat(timespec="minutes"),
+                ]
+            )
+        elif start_datetime:
+            query += " WHERE end_dt > ?"
+            params.append(start_datetime.isoformat(timespec="minutes"))
+        elif end_datetime:
+            query += " WHERE start_dt < ?"
+            params.append(end_datetime.isoformat(timespec="minutes"))
+        query += " ORDER BY start_dt, id"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def delete_block(block_id: int) -> bool:
+    """Delete an admin block by ID."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute("DELETE FROM trailer_blocks WHERE id = ?", (block_id,))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -322,7 +555,7 @@ def cancel_booking(booking_id: int) -> None:
         conn.close()
 
 
-def expire_outdated_bookings(now: Optional[datetime] = None) -> None:
+def expire_outdated_bookings(now: Optional[datetime] = None) -> int:
     """Cancel all pending bookings whose expiry timestamp has passed.
 
     This helper checks for bookings in status ``PENDING_PAYMENT`` with an
@@ -340,7 +573,7 @@ def expire_outdated_bookings(now: Optional[datetime] = None) -> None:
     current_iso = now.isoformat(timespec="seconds")
     conn = sqlite3.connect(DB_PATH)
     try:
-        conn.execute(
+        cur = conn.execute(
             """
             UPDATE bookings
             SET status = 'CANCELLED'
@@ -351,6 +584,7 @@ def expire_outdated_bookings(now: Optional[datetime] = None) -> None:
             (current_iso,),
         )
         conn.commit()
+        return cur.rowcount
     finally:
         conn.close()
 
@@ -422,3 +656,8 @@ def get_bookings(status: Optional[str] = None) -> list[dict]:
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+def _generate_booking_reference(created_at: datetime, booking_id: int) -> str:
+    """Build a deterministic reference ID for customer-facing flows."""
+    return f"DHS-{created_at.strftime('%Y%m%d')}-{booking_id:06d}"

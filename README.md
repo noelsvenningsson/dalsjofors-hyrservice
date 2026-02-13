@@ -83,6 +83,32 @@ curl -X POST -H "Content-Type: application/json" \
 curl "http://localhost:8000/api/payment?bookingId=<bokningsId>"
 ```
 
+### Admin API: blockera tider
+
+`POST /api/admin/blocks` accepterar två payload-stilar för tidsintervall:
+
+* Kanoniska fält: `startDatetime` + `endDatetime`
+* Bakåtkompatibla alias: `start` + `end`
+
+Om båda stilar skickas samtidigt används alltid `startDatetime`/`endDatetime`.
+Svaret använder fortsatt de kanoniska fälten `startDatetime` och `endDatetime`.
+
+Exempel (kanonisk stil):
+
+```sh
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"trailerType":"KAP","startDatetime":"2026-05-04T08:00","endDatetime":"2026-05-04T09:00","reason":"Maintenance"}' \
+  http://localhost:8000/api/admin/blocks
+```
+
+Exempel (alias-stil):
+
+```sh
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"trailerType":"KAP","start":"2026-05-04T08:00","end":"2026-05-04T09:00","reason":"Maintenance"}' \
+  http://localhost:8000/api/admin/blocks
+```
+
 ## Använda API:erna från kod
 
 Förutom webbgränssnittet kan du använda funktionerna i `db.py` direkt

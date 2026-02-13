@@ -14,8 +14,9 @@ Endpoints
 * ``GET /`` – serves the HTML wizard (index.html).
 * ``GET /static/<path>`` – serves static assets (CSS/JS/SVG).
 * ``GET /api/price`` – query parameters:
-  ``rentalType`` (``TWO_HOURS`` or ``FULL_DAY``) and ``date`` (ISO
-  YYYY-MM-DD).  Returns ``{price: int}``.
+  ``trailerType`` (``GALLER`` or ``KAP``), ``rentalType``
+  (``TWO_HOURS`` or ``FULL_DAY``) and ``date`` (ISO YYYY-MM-DD).
+  Returns ``{price: int}``.
 * ``GET /api/availability`` – query parameters:
   ``trailerType`` (``GALLER`` or ``KAP``), ``rentalType``,
   ``date``, and (optionally) ``startTime`` (HH:MM).  Calculates start
@@ -26,6 +27,11 @@ Endpoints
 * ``POST /api/hold`` – body JSON with ``trailerType``, ``rentalType``,
   ``date`` and optional ``startTime``.  Creates a booking in status
   ``PENDING_PAYMENT`` and returns ``{bookingId: int, price: int}``.
+* ``POST /api/admin/blocks`` – body JSON with ``trailerType`` and a
+  datetime range using either ``startDatetime``/``endDatetime`` or
+  backward-compatible ``start``/``end`` aliases. If both are provided,
+  ``startDatetime``/``endDatetime`` take precedence. Returns canonical
+  block fields including ``startDatetime`` and ``endDatetime``.
 
 The server intentionally does not implement Swish QR or payment
 confirmation; those are added in later milestones.
@@ -50,7 +56,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import db
-import sqlite3
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -123,6 +128,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_availability(query_params)
         if path == "/api/payment":
             return self.handle_payment(query_params)
+        if path == "/api/admin/bookings":
+            return self.handle_admin_bookings(query_params)
+        if path == "/api/admin/blocks":
+            return self.handle_admin_blocks_get(query_params)
 
         # Dev/test endpoint
         if path == "/api/health":
@@ -159,21 +168,57 @@ class Handler(BaseHTTPRequestHandler):
         # Handle Swish Commerce callback
         if path == "/api/swish/callback":
             return self.handle_swish_callback()
+        if path == "/api/admin/blocks":
+            return self.handle_admin_blocks_create()
+        if path == "/api/admin/expire-pending":
+            return self.handle_admin_expire_pending()
 
+        return self.end_json(404, {"error": "Not Found"})
+
+    def do_DELETE(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query_params = parse_query(parsed.query)
+
+        try:
+            db.expire_outdated_bookings()
+        except Exception:
+            pass
+
+        if path == "/api/admin/blocks":
+            return self.handle_admin_blocks_delete(query_params)
         return self.end_json(404, {"error": "Not Found"})
 
     # ---- API implementations ----
 
+    def _resolve_block_datetime_fields(self, data: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+        """Resolve accepted datetime aliases for admin block payloads.
+
+        Canonical keys are ``startDatetime``/``endDatetime``.
+        Backward-compatible aliases ``start``/``end`` are also accepted.
+        If both styles are provided, canonical keys take precedence.
+        """
+        start_dt_str = data.get("startDatetime")
+        end_dt_str = data.get("endDatetime")
+        if not start_dt_str:
+            start_dt_str = data.get("start")
+        if not end_dt_str:
+            end_dt_str = data.get("end")
+        return start_dt_str, end_dt_str
+
     def handle_price(self, params: Dict[str, str]) -> None:
+        trailer_type = params.get("trailerType")
         rental_type = params.get("rentalType")
         date_str = params.get("date")
         if not rental_type or not date_str:
             return self.end_json(400, {"error": "rentalType and date are required"})
+        # Backward compatible: old clients did not send trailerType.
+        trailer_type_u = (trailer_type or "GALLER").upper()
         rental_type_u = rental_type.upper()
         try:
             # If only date is given, assume start of day for weekday determination
             dt = datetime.fromisoformat(date_str + "T00:00")
-            price = db.calculate_price(dt, rental_type_u)
+            price = db.calculate_price(dt, rental_type_u, trailer_type_u)
         except Exception as e:
             return self.end_json(400, {"error": str(e)})
         return self.end_json(200, {"price": price})
@@ -201,31 +246,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.end_json(400, {"error": "Invalid rentalType"})
         except Exception as e:
             return self.end_json(400, {"error": str(e)})
-        # Compute remaining units (2 minus overlapping bookings)
         try:
-            # Use direct SQL count to compute overlapping bookings for given type and period
-            conn = sqlite3.connect(db.DB_PATH)
-            cur = conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM bookings
-                WHERE trailer_type = ? AND status != 'CANCELLED'
-                  AND (start_dt < ? AND ? < end_dt)
-                """,
-                (
-                    trailer_type_u,
-                    end_dt.isoformat(timespec="minutes"),
-                    start_dt.isoformat(timespec="minutes"),
-                ),
-            )
-            row = cur.fetchone()
-            overlapping = row[0] if row else 0
+            block = db.find_block_overlap(trailer_type_u, start_dt, end_dt)
+            if block:
+                overlapping = 1
+            else:
+                overlapping = db.count_overlapping_active_bookings(
+                    trailer_type_u, start_dt, end_dt
+                )
         except Exception as e:
-            # Return internal error with message
             return self.end_json(500, {"error": str(e)})
-        finally:
-            conn.close()
-        remaining = max(0, 2 - overlapping)
+        remaining = max(0, 1 - overlapping)
         available = remaining > 0
         return self.end_json(200, {"available": available, "remaining": remaining})
 
@@ -255,6 +286,123 @@ class Handler(BaseHTTPRequestHandler):
         # Create payment details if needed
         details = self._get_or_create_payment_details(booking_id)
         return self.end_json(200, details)
+
+    def handle_admin_bookings(self, params: Dict[str, str]) -> None:
+        """Return booking rows for admin tooling."""
+        status = params.get("status")
+        status_u = status.upper() if status else None
+        if status_u and status_u not in {"PENDING_PAYMENT", "CONFIRMED", "CANCELLED"}:
+            return self.end_json(400, {"error": "Invalid status"})
+        bookings = db.get_bookings(status_u)
+        payload_rows = []
+        for booking in bookings:
+            payload_rows.append(
+                {
+                    "bookingId": booking["id"],
+                    "bookingReference": booking.get("booking_reference"),
+                    "trailerType": booking["trailer_type"],
+                    "rentalType": booking["rental_type"],
+                    "startDt": booking["start_dt"],
+                    "endDt": booking["end_dt"],
+                    "price": booking["price"],
+                    "status": booking["status"],
+                    "createdAt": booking["created_at"],
+                    "swishId": booking.get("swish_id"),
+                    "expiresAt": booking.get("expires_at"),
+                }
+            )
+        return self.end_json(200, {"bookings": payload_rows})
+
+    def handle_admin_blocks_get(self, params: Dict[str, str]) -> None:
+        start_dt_str = params.get("startDatetime")
+        end_dt_str = params.get("endDatetime")
+        try:
+            start_dt = datetime.fromisoformat(start_dt_str) if start_dt_str else None
+            end_dt = datetime.fromisoformat(end_dt_str) if end_dt_str else None
+        except Exception:
+            return self.end_json(400, {"error": "Invalid datetime format"})
+
+        if start_dt and end_dt and end_dt <= start_dt:
+            return self.end_json(400, {"error": "endDatetime must be after startDatetime"})
+
+        rows = db.list_blocks(start_dt, end_dt)
+        payload_rows = []
+        for row in rows:
+            payload_rows.append(
+                {
+                    "id": row["id"],
+                    "trailerType": row["trailer_type"],
+                    "startDatetime": row["start_dt"],
+                    "endDatetime": row["end_dt"],
+                    "reason": row["reason"],
+                    "createdAt": row["created_at"],
+                }
+            )
+        return self.end_json(200, {"blocks": payload_rows})
+
+    def handle_admin_blocks_create(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length) if length > 0 else b"{}"
+            data = json.loads(body.decode("utf-8"))
+        except Exception:
+            return self.end_json(400, {"error": "Invalid JSON"})
+
+        trailer_type = (data.get("trailerType") or "").upper()
+        start_dt_str, end_dt_str = self._resolve_block_datetime_fields(data)
+        reason = data.get("reason") or ""
+        if not trailer_type or not start_dt_str or not end_dt_str:
+            return self.end_json(
+                400,
+                {
+                    "error": "trailerType and datetime range are required; use startDatetime/endDatetime or start/end"
+                },
+            )
+        try:
+            start_dt = datetime.fromisoformat(start_dt_str)
+            end_dt = datetime.fromisoformat(end_dt_str)
+        except Exception:
+            return self.end_json(
+                400,
+                {"error": "Invalid datetime format; expected ISO 8601 in startDatetime/endDatetime or start/end"},
+            )
+        if end_dt <= start_dt:
+            return self.end_json(400, {"error": "endDatetime must be after startDatetime"})
+        try:
+            row = db.create_block(trailer_type, start_dt, end_dt, reason)
+        except ValueError as e:
+            return self.end_json(400, {"error": str(e)})
+        except Exception as e:
+            return self.end_json(500, {"error": str(e)})
+
+        return self.end_json(
+            201,
+            {
+                "id": row["id"],
+                "trailerType": row["trailer_type"],
+                "startDatetime": row["start_dt"],
+                "endDatetime": row["end_dt"],
+                "reason": row["reason"],
+                "createdAt": row["created_at"],
+            },
+        )
+
+    def handle_admin_blocks_delete(self, params: Dict[str, str]) -> None:
+        block_id_str = params.get("id")
+        if not block_id_str:
+            return self.end_json(400, {"error": "id is required"})
+        try:
+            block_id = int(block_id_str)
+        except ValueError:
+            return self.end_json(400, {"error": "id must be an integer"})
+
+        if not db.delete_block(block_id):
+            return self.end_json(404, {"error": "Block not found"})
+        return self.end_json(200, {"deleted": True, "id": block_id})
+
+    def handle_admin_expire_pending(self) -> None:
+        expired_count = db.expire_outdated_bookings()
+        return self.end_json(200, {"expiredCount": expired_count})
 
     def handle_hold(self) -> None:
         # Parse JSON body
@@ -290,11 +438,37 @@ class Handler(BaseHTTPRequestHandler):
             booking_id, price = db.create_booking(
                 trailer_type_u, rental_type_u, start_dt, end_dt
             )
+        except db.SlotBlockedError as block_err:
+            block = block_err.block
+            return self.end_json(
+                409,
+                {
+                    "error": "slot blocked",
+                    "message": "Requested slot overlaps an admin block",
+                    "block": {
+                        "id": block["id"],
+                        "trailerType": block["trailer_type"],
+                        "startDatetime": block["start_dt"],
+                        "endDatetime": block["end_dt"],
+                        "reason": block["reason"],
+                    },
+                },
+            )
+        except db.SlotTakenError:
+            return self.end_json(409, {"error": "slot taken"})
         except ValueError as ve:
             return self.end_json(400, {"error": str(ve)})
         except Exception as e:
             return self.end_json(500, {"error": str(e)})
-        return self.end_json(201, {"bookingId": booking_id, "price": price})
+        booking = db.get_booking_by_id(booking_id)
+        return self.end_json(
+            201,
+            {
+                "bookingId": booking_id,
+                "bookingReference": booking.get("booking_reference") if booking else None,
+                "price": price,
+            },
+        )
 
     def handle_swish_callback(self) -> None:
         """Handle callbacks from Swish Commerce API.
@@ -350,7 +524,8 @@ class Handler(BaseHTTPRequestHandler):
         details = self._get_or_create_payment_details(booking_id)
         price = details["price"]
         qr_url = details["qrUrl"]
-        message = f"DHS-{booking_id}"
+        message = details["swishMessage"]
+        booking_reference = details.get("bookingReference")
         # Compose simple HTML for payment page
         html = f"""
 <!doctype html><html lang=\"sv\"><head>
@@ -372,6 +547,7 @@ class Handler(BaseHTTPRequestHandler):
     <p><strong>Belopp:</strong> {price} kr</p>
     <p><strong>Mottagare:</strong> 1234 945580</p>
     <p><strong>Meddelande:</strong> {message}</p>
+    <p><strong>Bokningsreferens:</strong> {booking_reference or "saknas"}</p>
     <img src=\"{qr_url}\" alt=\"Swish QR\" width=\"280\" height=\"280\" />
   </div>
   <div class=\"card\">
@@ -419,6 +595,7 @@ class Handler(BaseHTTPRequestHandler):
         end_time = booking["end_dt"][11:]
         summary_lines = [
             f"Boknings-ID: {booking['id']}",
+            f"Bokningsreferens: {booking.get('booking_reference') or 'saknas'}",
             f"Släp: {trailer_text}",
             f"Datum: {start_date}",
             f"Start: {start_time}",
@@ -484,13 +661,16 @@ class Handler(BaseHTTPRequestHandler):
             db.set_swish_id(booking_id, swish_id)
         payee = os.environ.get("SWISH_PAYEE", "1234945580")
         amount_str = f"{amount:.2f}".replace(".", ",")
-        message = f"DHS-{booking_id}"
+        booking_reference = booking.get("booking_reference")
+        message = booking_reference or f"DHS-{booking_id}"
         payload = f"C{payee};{amount_str};{urllib.parse.quote(message, safe='')};0"
         qr_url = "https://quickchart.io/qr?size=320&text=" + urllib.parse.quote(payload, safe="")
         return {
             "bookingId": booking_id,
+            "bookingReference": booking_reference,
             "price": amount,
             "swishId": swish_id,
+            "swishMessage": message,
             "qrUrl": qr_url,
             "payload": payload,
         }
