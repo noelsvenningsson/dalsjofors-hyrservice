@@ -654,32 +654,121 @@ class Handler(BaseHTTPRequestHandler):
         qr_url = details["qrUrl"]
         message = details["swishMessage"]
         booking_reference = details.get("bookingReference")
-        # Compose simple HTML for payment page
+        # Compose payment page with polished styling; no booking/payment behavior changes.
         html = f"""
 <!doctype html><html lang=\"sv\"><head>
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
   <title>Betalning – Bokning {booking_id}</title>
   <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background: #f8f9fb; color: #333; }}
-    header, footer {{ background: #0b3b75; color: #fff; padding: 16px; text-align: center; }}
-    main {{ max-width: 640px; margin: 0 auto; padding: 16px; }}
-    .card {{ background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.1); }}
+    :root {{
+      --bg: #f2f6f9;
+      --text: #1e2730;
+      --muted: #5b6875;
+      --surface: #ffffff;
+      --border: #d7e0e8;
+      --brand: #1f4f7d;
+      --success: #107443;
+      --radius: 16px;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 500px at 20% -10%, #d7e8f6 0%, rgba(215, 232, 246, 0) 65%),
+        radial-gradient(1000px 400px at 80% -15%, #ddeef0 0%, rgba(221, 238, 240, 0) 70%),
+        var(--bg);
+    }}
+    header, footer {{
+      background: linear-gradient(165deg, #123152 0%, #1f4f7d 62%, #2d628e 100%);
+      color: #fff;
+      padding: 16px;
+      text-align: center;
+    }}
+    header h1 {{ margin: 0; font-size: clamp(1.5rem, 3.5vw, 2rem); }}
+    main {{ max-width: 700px; margin: 0 auto; padding: 16px 12px; }}
+    .progress {{
+      display: inline-flex;
+      border-radius: 999px;
+      padding: 6px 12px;
+      border: 1px solid #d2dfeb;
+      background: #e6eff7;
+      color: #2c5377;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }}
+    .card {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 12px;
+      box-shadow: 0 10px 30px rgba(18, 35, 52, 0.08);
+    }}
+    .meta p {{
+      margin: 8px 0;
+      padding: 8px 10px;
+      border-radius: 9px;
+      background: #f8fafb;
+      border: 1px solid #e4ebf2;
+    }}
+    .qr-wrap {{
+      display: flex;
+      justify-content: center;
+      margin-top: 12px;
+    }}
+    .qr-wrap img {{
+      max-width: min(320px, 100%);
+      width: 100%;
+      height: auto;
+      border-radius: 14px;
+      border: 1px solid #dbe5ee;
+      background: #fff;
+      padding: 10px;
+    }}
+    .waiting {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--success);
+      font-weight: 700;
+      margin-bottom: 8px;
+    }}
+    .dot {{
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--success);
+      animation: pulse 1.2s ease-in-out infinite;
+    }}
+    @keyframes pulse {{
+      0%, 100% {{ opacity: .5; transform: scale(1); }}
+      50% {{ opacity: 1; transform: scale(1.15); }}
+    }}
+    footer p {{ margin: 6px 0; }}
   </style>
 </head><body>
 <header><h1>Dalsjöfors Hyrservice</h1></header>
 <main>
+  <div class=\"progress\">Steg 4 av 5: Betalning</div>
   <div class=\"card\">
     <h2>Betala med Swish</h2>
     <p>Scanna QR-koden i din Swish-app. Belopp och meddelande är förifyllda.</p>
-    <p><strong>Belopp:</strong> {price} kr</p>
-    <p><strong>Mottagare:</strong> 1234 945580</p>
-    <p><strong>Meddelande:</strong> {message}</p>
-    <p><strong>Bokningsreferens:</strong> {booking_reference or "saknas"}</p>
-    <img src=\"{qr_url}\" alt=\"Swish QR\" width=\"280\" height=\"280\" />
+    <div class=\"meta\">
+      <p><strong>Belopp:</strong> {price} kr</p>
+      <p><strong>Mottagare:</strong> 1234 945580</p>
+      <p><strong>Meddelande:</strong> {message}</p>
+      <p><strong>Bokningsreferens:</strong> {booking_reference or "saknas"}</p>
+    </div>
+    <div class=\"qr-wrap\">
+      <img src=\"{qr_url}\" alt=\"Swish QR\" width=\"320\" height=\"320\" />
+    </div>
   </div>
   <div class=\"card\">
-    <h3>Väntar på betalning …</h3>
+    <div class=\"waiting\"><span class=\"dot\" aria-hidden=\"true\"></span>Väntar på betalning …</div>
     <p>När du har betalat via Swish kommer din bokning automatiskt att bekräftas. Du kan stänga den här sidan.</p>
   </div>
 </main>
@@ -740,21 +829,104 @@ class Handler(BaseHTTPRequestHandler):
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
   <title>Bekräftelse – Bokning {booking_id}</title>
   <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background: #f8f9fb; color: #333; }}
-    header, footer {{ background: #0b3b75; color: #fff; padding: 16px; text-align: center; }}
-    main {{ max-width: 640px; margin: 0 auto; padding: 16px; }}
-    .card {{ background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.1); }}
-    textarea {{ width: 100%; height: 200px; border-radius: 8px; padding: 8px; border: 1px solid #ccc; }}
-    button {{ padding: 12px 16px; border-radius: 12px; border: none; background: #0b3b75; color: #fff; font-weight: 600; cursor: pointer; }}
+    :root {{
+      --bg: #f2f6f9;
+      --text: #1e2730;
+      --muted: #5b6875;
+      --surface: #ffffff;
+      --border: #d7e0e8;
+      --brand: #1f4f7d;
+      --brand-dark: #163a5c;
+      --success: #107443;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 500px at 20% -10%, #d7e8f6 0%, rgba(215, 232, 246, 0) 65%),
+        radial-gradient(1000px 400px at 80% -15%, #ddeef0 0%, rgba(221, 238, 240, 0) 70%),
+        var(--bg);
+    }}
+    header, footer {{
+      background: linear-gradient(165deg, #123152 0%, #1f4f7d 62%, #2d628e 100%);
+      color: #fff;
+      padding: 16px;
+      text-align: center;
+    }}
+    header h1 {{ margin: 0; font-size: clamp(1.4rem, 3vw, 1.9rem); }}
+    main {{ max-width: 700px; margin: 0 auto; padding: 16px 12px; }}
+    .progress {{
+      display: inline-flex;
+      border-radius: 999px;
+      padding: 6px 12px;
+      border: 1px solid #d2dfeb;
+      background: #e6eff7;
+      color: #2c5377;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }}
+    .card {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(18, 35, 52, 0.08);
+    }}
+    .status {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--success);
+      font-weight: 700;
+      margin-bottom: 10px;
+    }}
+    .status::before {{
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--success);
+    }}
+    textarea {{
+      width: 100%;
+      min-height: 220px;
+      border-radius: 10px;
+      padding: 10px;
+      border: 1px solid #c6d4e1;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }}
+    button {{
+      margin-top: 10px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      border: none;
+      background: var(--brand);
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }}
+    button:hover {{ background: var(--brand-dark); }}
+    .code-note {{
+      margin-top: 10px;
+      color: var(--muted);
+    }}
+    footer p {{ margin: 6px 0; }}
   </style>
 </head><body>
 <header><h1>Bokning bekräftad</h1></header>
 <main>
+  <div class=\"progress\">Steg 5 av 5: Bekräftelse</div>
   <div class=\"card\">
+    <div class=\"status\">Betalning registrerad</div>
     <h2>Bekräftelseuppgifter</h2>
-    <textarea readonly>{confirm_text}</textarea>
-    <button onclick=\"navigator.clipboard.writeText('{confirm_text}'.replace(/\n/g, '\n'))\">Kopiera text</button>
-    <p>Kodlåskod: <strong>6392</strong></p>
+    <textarea readonly id=\"confirm-text\">{confirm_text}</textarea>
+    <button type=\"button\" id=\"copy-confirm\">Kopiera text</button>
+    <p class=\"code-note\">Kodlåskod: <strong>6392</strong></p>
   </div>
 </main>
 <footer>
@@ -762,6 +934,25 @@ class Handler(BaseHTTPRequestHandler):
   <p>Dalsjöfors Hyrservice AB • Org.nr: 559062-4556 • Momsnr: SE559062455601 • Adress: Boråsvägen 58B, 516 34 Dalsjöfors • Telefon: 070‑457 97 09</p>
   <p>Frågor eller problem? Ring <strong>070‑457 97 09</strong></p>
 </footer>
+<script>
+  const copyBtn = document.getElementById("copy-confirm");
+  const confirmText = document.getElementById("confirm-text");
+  copyBtn.addEventListener("click", () => {{
+    navigator.clipboard.writeText(confirmText.value)
+      .then(() => {{
+        const oldLabel = copyBtn.textContent;
+        copyBtn.textContent = "Kopierad";
+        copyBtn.disabled = true;
+        setTimeout(() => {{
+          copyBtn.textContent = oldLabel;
+          copyBtn.disabled = false;
+        }}, 1200);
+      }})
+      .catch(() => {{
+        alert("Kunde inte kopiera texten");
+      }});
+  }});
+</script>
 </body></html>
 """
         body = html.encode("utf-8")

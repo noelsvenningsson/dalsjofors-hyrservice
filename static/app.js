@@ -76,29 +76,43 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  function setInfoState(el, text, stateClass) {
+    el.textContent = text;
+    el.classList.remove('loading', 'error', 'success', 'warning');
+    if (stateClass) {
+      el.classList.add(stateClass);
+    }
+  }
+
+  function setButtonLoading(button, loading) {
+    button.disabled = loading;
+    button.classList.toggle('is-loading', loading);
+  }
+
   function updatePriceInfo() {
     if (!state.rentalType) return;
     // If date is selected, fetch price from API; otherwise show placeholder for full day
     if (state.date) {
+      setInfoState(priceInfo, 'Hämtar pris …', 'loading');
       fetch(`/api/price?rentalType=${encodeURIComponent(state.rentalType)}&date=${encodeURIComponent(state.date)}`)
         .then(res => res.json())
         .then(data => {
           if (data && typeof data.price === 'number') {
             state.price = data.price;
-            priceInfo.textContent = `Pris: ${data.price} kr`;
+            setInfoState(priceInfo, `Pris: ${data.price} kr`, 'success');
           } else {
-            priceInfo.textContent = 'Kunde inte hämta pris';
+            setInfoState(priceInfo, 'Kunde inte hämta pris', 'error');
           }
         })
         .catch(() => {
-          priceInfo.textContent = 'Kunde inte hämta pris';
+          setInfoState(priceInfo, 'Kunde inte hämta pris', 'error');
         });
     } else {
       // Show generic placeholder for full day
       if (state.rentalType === 'FULL_DAY') {
-        priceInfo.textContent = 'Pris: 250/300 kr beroende på veckodag';
+        setInfoState(priceInfo, 'Pris: 250/300 kr beroende på veckodag', null);
       } else if (state.rentalType === 'TWO_HOURS') {
-        priceInfo.textContent = 'Pris: 200 kr';
+        setInfoState(priceInfo, 'Pris: 200 kr', null);
       }
     }
   }
@@ -124,6 +138,9 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateAvailabilityCounts() {
     // Only update if date and rentalType selected
     if (!state.date || !state.rentalType) return;
+    if (state.trailerType) {
+      setInfoState(availabilityInfo, 'Kontrollerar tillgänglighet …', 'loading');
+    }
     // Determine startTime parameter (only for TWO_HOURS)
     const timeParam = state.rentalType === 'TWO_HOURS' && state.time ? `&startTime=${encodeURIComponent(state.time)}` : '';
     ['GALLER', 'KAP'].forEach(type => {
@@ -145,7 +162,9 @@ document.addEventListener('DOMContentLoaded', () => {
           updateDebugInfo();
         })
         .catch(() => {
-          // ignore
+          if (state.trailerType === type) {
+            setInfoState(availabilityInfo, 'Kunde inte läsa tillgänglighet', 'error');
+          }
         });
     });
   }
@@ -153,15 +172,13 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateAvailabilityInfo() {
     // Called when availability state updated (for selected trailer)
     if (state.remaining == null) {
-      availabilityInfo.textContent = '';
+      setInfoState(availabilityInfo, '', null);
       return;
     }
     if (state.available) {
-      availabilityInfo.textContent = `${state.remaining} av 2 lediga`;
-      availabilityInfo.style.color = '#222';
+      setInfoState(availabilityInfo, `${state.remaining} av 2 lediga`, 'success');
     } else {
-      availabilityInfo.textContent = 'Fullbokat';
-      availabilityInfo.style.color = '#c00';
+      setInfoState(availabilityInfo, 'Fullbokat', 'error');
     }
     // Enable/disable next button
     step3Next.disabled = !state.available;
@@ -301,6 +318,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   proceedPay.addEventListener('click', () => {
     // Create booking hold via API and then redirect to the payment page.
+    const defaultLabel = proceedPay.textContent;
+    proceedPay.textContent = 'Reserverar …';
+    setButtonLoading(proceedPay, true);
     const payload = {
       trailerType: state.trailerType,
       rentalType: state.rentalType,
@@ -318,10 +338,17 @@ document.addEventListener('DOMContentLoaded', () => {
           // Redirect to payment page with bookingId
           window.location.href = `/pay?bookingId=${encodeURIComponent(data.bookingId)}`;
         } else if (data && data.error) {
+          proceedPay.textContent = defaultLabel;
+          setButtonLoading(proceedPay, false);
           alert(`Kunde inte reservera bokning: ${data.error}`);
+        } else {
+          proceedPay.textContent = defaultLabel;
+          setButtonLoading(proceedPay, false);
         }
       })
       .catch(() => {
+        proceedPay.textContent = defaultLabel;
+        setButtonLoading(proceedPay, false);
         alert('Fel vid kontakt med servern');
       });
   });

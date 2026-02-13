@@ -1,23 +1,86 @@
-/* Baseline styling for Dalsjöfors Hyrservice wizard */
+/* Booking wizard styling */
 
-body {
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  margin: 0;
-  padding: 0;
-  background: #f8f9fb;
-  color: #333;
+:root {
+  --bg: #f2f6f9;
+  --text: #1e2730;
+  --muted: #5b6875;
+  --surface: #ffffff;
+  --surface-soft: #f8fafb;
+  --brand: #1f4f7d;
+  --brand-dark: #163a5c;
+  --border: #d7e0e8;
+  --success: #107443;
+  --danger: #b63434;
+  --warning: #9a5d00;
+  --radius-lg: 16px;
+  --radius-md: 12px;
+  --radius-sm: 10px;
+  --shadow: 0 10px 30px rgba(18, 35, 52, 0.08);
 }
 
-header, footer {
-  background: #0b3b75;
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  margin: 0;
+  background:
+    radial-gradient(1200px 500px at 20% -10%, #d7e8f6 0%, rgba(215, 232, 246, 0) 65%),
+    radial-gradient(1000px 400px at 80% -15%, #ddeef0 0%, rgba(221, 238, 240, 0) 70%),
+    var(--bg);
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.site-header,
+.site-footer {
+  background: linear-gradient(165deg, #123152 0%, #1f4f7d 62%, #2d628e 100%);
   color: #fff;
   text-align: center;
-  padding: 1rem;
+}
+
+.site-header {
+  padding: 1.25rem 1rem 1.55rem;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.header-inner {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.kicker {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.site-header h1 {
+  margin: 0.35rem 0 0;
+  font-size: clamp(1.7rem, 3.8vw, 2.25rem);
+  line-height: 1.1;
+}
+
+.lead {
+  margin: 0.45rem 0 0;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.site-footer {
+  margin-top: 2.2rem;
+  padding: 1.3rem 1rem;
+  font-size: 0.94rem;
+}
+
+.site-footer p {
+  margin: 0.4rem 0;
 }
 
 .admin-link {
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.88);
   text-decoration: none;
 }
 
@@ -28,121 +91,284 @@ header, footer {
 }
 
 main#wizard {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 1rem;
+  width: min(700px, 100% - 1.5rem);
+  margin: 1.1rem auto 0;
 }
 
 .progress {
-  font-size: 0.9rem;
-  margin-bottom: 0.5rem;
-  color: #666;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.45rem 0.8rem;
+  margin: 0 0 0.85rem;
+  border-radius: 999px;
+  background: #e6eff7;
+  border: 1px solid #d2dfeb;
+  color: #2c5377;
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .step {
-  background: #fff;
-  padding: 1rem;
-  border-radius: 12px;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
-  margin-bottom: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 1.2rem;
 }
 
 .step h2 {
-  margin-top: 0;
-  font-size: 1.3rem;
+  margin: 0;
+  font-size: clamp(1.3rem, 2.6vw, 1.65rem);
+  line-height: 1.2;
+}
+
+.step-intro {
+  margin: 0.45rem 0 1.05rem;
+  color: var(--muted);
+  font-size: 0.96rem;
 }
 
 .trailers {
   display: flex;
-  gap: 1rem;
-  justify-content: space-between;
+  gap: 0.85rem;
   flex-wrap: wrap;
 }
 
 .card {
-  flex: 1 1 calc(50% - 0.5rem);
-  padding: 1rem;
-  text-align: center;
-  background: #eef2f9;
-  border: none;
-  border-radius: 12px;
+  flex: 1 1 calc(50% - 0.425rem);
+  min-height: 126px;
+  padding: 1rem 0.95rem;
+  border-radius: var(--radius-md);
+  border: 1px solid #dce6f0;
+  background:
+    linear-gradient(180deg, #f8fbff 0%, #f2f6fb 100%);
+  text-align: left;
   cursor: pointer;
-  transition: background 0.2s, box-shadow 0.2s;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.2s ease;
+}
+
+.card:hover {
+  transform: translateY(-1px);
+  border-color: #c6d8ea;
+  box-shadow: 0 8px 20px rgba(20, 55, 89, 0.08);
 }
 
 .card.selected {
-  background: #d8e7ff;
-  box-shadow: 0 0 0 2px #0b3b75;
+  border-color: #336b9d;
+  box-shadow: inset 0 0 0 2px rgba(51, 107, 157, 0.35);
+  background: linear-gradient(180deg, #edf5ff 0%, #e7f1fe 100%);
 }
 
 .card h3 {
-  margin: 0 0 0.5rem;
+  margin: 0 0 0.35rem;
+  font-size: 1.14rem;
 }
 
 .availability {
-  font-size: 0.85rem;
-  color: #555;
+  margin: 0;
+  color: #425565;
+  font-size: 0.9rem;
+}
+
+.rental-options {
+  display: grid;
+  gap: 0.68rem;
 }
 
 .rental-options label {
-  display: block;
-  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.75rem;
+  cursor: pointer;
+}
+
+.rental-options input[type="radio"] {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--brand);
+}
+
+.date-time-picker {
+  display: grid;
+  gap: 0.7rem;
 }
 
 .date-time-picker label {
-  display: block;
-  margin-bottom: 0.5rem;
+  display: grid;
+  gap: 0.32rem;
+  font-weight: 600;
 }
 
-select, input[type="date"] {
-  font-size: 1rem;
-  padding: 0.3rem;
+select,
+input[type="date"] {
   width: 100%;
-  box-sizing: border-box;
+  min-height: 42px;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #c7d5e2;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+select:focus-visible,
+input[type="date"]:focus-visible,
+.actions button:focus-visible,
+.card:focus-visible {
+  outline: 3px solid rgba(22, 103, 165, 0.26);
+  outline-offset: 2px;
 }
 
 .info {
-  margin: 0.5rem 0;
-  font-size: 0.9rem;
-  color: #333;
+  min-height: 1.5rem;
+  margin: 0.75rem 0 0;
+  color: #2b3e50;
+  font-size: 0.94rem;
+}
+
+.info.loading {
+  color: var(--muted);
+}
+
+.info.error {
+  color: var(--danger);
+}
+
+.info.success {
+  color: var(--success);
+}
+
+.info.warning {
+  color: var(--warning);
+}
+
+.summary-list p {
+  margin: 0.4rem 0;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: var(--surface-soft);
+  border: 1px solid #e4ebf2;
 }
 
 .actions {
   display: flex;
-  justify-content: space-between;
-  margin-top: 1rem;
+  gap: 0.6rem;
+  margin-top: 1.1rem;
 }
 
 .actions button {
-  padding: 0.6rem 1rem;
-  font-size: 1rem;
-  border: none;
-  border-radius: 12px;
-  cursor: pointer;
+  appearance: none;
+  flex: 1 1 auto;
+  min-height: 44px;
+  padding: 0.62rem 0.95rem;
+  border-radius: 11px;
+  border: 1px solid transparent;
+  background: var(--brand);
   color: #fff;
-  background: #0b3b75;
-  transition: background 0.2s;
+  font-size: 0.98rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.actions button:hover:not(:disabled) {
+  background: var(--brand-dark);
+}
+
+.actions button:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .actions button:disabled {
-  background: #9ca5b3;
+  background: #96a8b7;
+  border-color: #96a8b7;
   cursor: not-allowed;
 }
 
+#step2-back,
+#step3-back,
+#step4-back {
+  background: #fff;
+  color: #28425a;
+  border-color: #b3c4d3;
+}
+
+#step2-back:hover:not(:disabled),
+#step3-back:hover:not(:disabled),
+#step4-back:hover:not(:disabled) {
+  background: #f5f9fc;
+}
+
+.is-loading::after {
+  content: "";
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  margin-left: 0.5em;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-top-color: #fff;
+  vertical-align: -0.1em;
+  animation: spinner 0.8s linear infinite;
+}
+
 #dev-panel {
-  background: #fff8e1;
-  border: 1px solid #ffecb3;
-  padding: 0.5rem;
-  margin-top: 1rem;
+  margin-top: 0.9rem;
+  background: #fff8e7;
+  border: 1px solid #f0dea6;
+  padding: 0.8rem;
+  border-radius: var(--radius-sm);
 }
 
 #dev-panel h3 {
-  margin-top: 0;
+  margin: 0 0 0.35rem;
   font-size: 1rem;
 }
 
+@keyframes spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 640px) {
+  main#wizard {
+    width: min(700px, 100% - 1rem);
+  }
+
+  .step {
+    padding: 1rem;
+  }
+
+  .actions {
+    flex-direction: column;
+  }
+
+  .actions button {
+    width: 100%;
+  }
+}
+
 @media (max-width: 480px) {
+  .site-header {
+    padding-top: 1rem;
+    padding-bottom: 1.2rem;
+  }
+
+  .kicker {
+    font-size: 0.72rem;
+  }
+
   .card {
     flex: 1 1 100%;
+  }
+
+  .progress {
+    font-size: 0.8rem;
   }
 }
