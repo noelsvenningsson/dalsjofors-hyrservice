@@ -100,6 +100,23 @@ Recent migrations and behavior updates are auto-applied by `db.init_db()`:
 
 All responses are JSON.
 
+Error responses use a stable structure with a legacy-compatible string:
+
+```json
+{
+  "error": "legacy error message",
+  "errorInfo": {
+    "code": "invalid_request",
+    "message": "Invalid request",
+    "details": {
+      "fields": {
+        "date": "Expected format YYYY-MM-DD"
+      }
+    }
+  }
+}
+```
+
 ### `GET /api/price`
 
 Required inputs:
@@ -255,3 +272,13 @@ Common errors:
 ## Smoke Test
 
 See `SMOKE_TEST_CHECKLIST.md`.
+
+## Database Backup
+
+Use the helper script to create a timestamped SQLite backup:
+
+```bash
+./scripts/backup_db.sh
+```
+
+Backups are stored in `backups/` with names like `database_20260213_221500.db`.
