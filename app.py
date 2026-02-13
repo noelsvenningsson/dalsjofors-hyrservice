@@ -51,7 +51,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import db
-import sqlite3
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -126,6 +125,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_payment(query_params)
         if path == "/api/admin/bookings":
             return self.handle_admin_bookings(query_params)
+        if path == "/api/admin/blocks":
+            return self.handle_admin_blocks_get(query_params)
 
         # Dev/test endpoint
         if path == "/api/health":
@@ -162,7 +163,25 @@ class Handler(BaseHTTPRequestHandler):
         # Handle Swish Commerce callback
         if path == "/api/swish/callback":
             return self.handle_swish_callback()
+        if path == "/api/admin/blocks":
+            return self.handle_admin_blocks_create()
+        if path == "/api/admin/expire-pending":
+            return self.handle_admin_expire_pending()
 
+        return self.end_json(404, {"error": "Not Found"})
+
+    def do_DELETE(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query_params = parse_query(parsed.query)
+
+        try:
+            db.expire_outdated_bookings()
+        except Exception:
+            pass
+
+        if path == "/api/admin/blocks":
+            return self.handle_admin_blocks_delete(query_params)
         return self.end_json(404, {"error": "Not Found"})
 
     # ---- API implementations ----
@@ -207,30 +226,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.end_json(400, {"error": "Invalid rentalType"})
         except Exception as e:
             return self.end_json(400, {"error": str(e)})
-        # Compute remaining units (2 minus overlapping bookings)
         try:
-            # Use direct SQL count to compute overlapping bookings for given type and period
-            conn = sqlite3.connect(db.DB_PATH)
-            cur = conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM bookings
-                WHERE trailer_type = ? AND status != 'CANCELLED'
-                  AND (start_dt < ? AND ? < end_dt)
-                """,
-                (
-                    trailer_type_u,
-                    end_dt.isoformat(timespec="minutes"),
-                    start_dt.isoformat(timespec="minutes"),
-                ),
-            )
-            row = cur.fetchone()
-            overlapping = row[0] if row else 0
+            block = db.find_block_overlap(trailer_type_u, start_dt, end_dt)
+            if block:
+                overlapping = 1
+            else:
+                overlapping = db.count_overlapping_active_bookings(
+                    trailer_type_u, start_dt, end_dt
+                )
         except Exception as e:
-            # Return internal error with message
             return self.end_json(500, {"error": str(e)})
-        finally:
-            conn.close()
         remaining = max(0, 1 - overlapping)
         available = remaining > 0
         return self.end_json(200, {"available": available, "remaining": remaining})
@@ -288,6 +293,88 @@ class Handler(BaseHTTPRequestHandler):
             )
         return self.end_json(200, {"bookings": payload_rows})
 
+    def handle_admin_blocks_get(self, params: Dict[str, str]) -> None:
+        start_dt_str = params.get("startDatetime")
+        end_dt_str = params.get("endDatetime")
+        try:
+            start_dt = datetime.fromisoformat(start_dt_str) if start_dt_str else None
+            end_dt = datetime.fromisoformat(end_dt_str) if end_dt_str else None
+        except Exception:
+            return self.end_json(400, {"error": "Invalid datetime format"})
+
+        if start_dt and end_dt and end_dt <= start_dt:
+            return self.end_json(400, {"error": "endDatetime must be after startDatetime"})
+
+        rows = db.list_blocks(start_dt, end_dt)
+        payload_rows = []
+        for row in rows:
+            payload_rows.append(
+                {
+                    "id": row["id"],
+                    "trailerType": row["trailer_type"],
+                    "startDatetime": row["start_dt"],
+                    "endDatetime": row["end_dt"],
+                    "reason": row["reason"],
+                    "createdAt": row["created_at"],
+                }
+            )
+        return self.end_json(200, {"blocks": payload_rows})
+
+    def handle_admin_blocks_create(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length) if length > 0 else b"{}"
+            data = json.loads(body.decode("utf-8"))
+        except Exception:
+            return self.end_json(400, {"error": "Invalid JSON"})
+
+        trailer_type = (data.get("trailerType") or "").upper()
+        start_dt_str = data.get("startDatetime")
+        end_dt_str = data.get("endDatetime")
+        reason = data.get("reason") or ""
+        if not trailer_type or not start_dt_str or not end_dt_str:
+            return self.end_json(
+                400,
+                {"error": "trailerType, startDatetime and endDatetime are required"},
+            )
+        try:
+            start_dt = datetime.fromisoformat(start_dt_str)
+            end_dt = datetime.fromisoformat(end_dt_str)
+            row = db.create_block(trailer_type, start_dt, end_dt, reason)
+        except ValueError as e:
+            return self.end_json(400, {"error": str(e)})
+        except Exception as e:
+            return self.end_json(500, {"error": str(e)})
+
+        return self.end_json(
+            201,
+            {
+                "id": row["id"],
+                "trailerType": row["trailer_type"],
+                "startDatetime": row["start_dt"],
+                "endDatetime": row["end_dt"],
+                "reason": row["reason"],
+                "createdAt": row["created_at"],
+            },
+        )
+
+    def handle_admin_blocks_delete(self, params: Dict[str, str]) -> None:
+        block_id_str = params.get("id")
+        if not block_id_str:
+            return self.end_json(400, {"error": "id is required"})
+        try:
+            block_id = int(block_id_str)
+        except ValueError:
+            return self.end_json(400, {"error": "id must be an integer"})
+
+        if not db.delete_block(block_id):
+            return self.end_json(404, {"error": "Block not found"})
+        return self.end_json(200, {"deleted": True, "id": block_id})
+
+    def handle_admin_expire_pending(self) -> None:
+        expired_count = db.expire_outdated_bookings()
+        return self.end_json(200, {"expiredCount": expired_count})
+
     def handle_hold(self) -> None:
         # Parse JSON body
         try:
@@ -321,6 +408,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             booking_id, price = db.create_booking(
                 trailer_type_u, rental_type_u, start_dt, end_dt
+            )
+        except db.SlotBlockedError as block_err:
+            block = block_err.block
+            return self.end_json(
+                409,
+                {
+                    "error": "slot blocked",
+                    "message": "Requested slot overlaps an admin block",
+                    "block": {
+                        "id": block["id"],
+                        "trailerType": block["trailer_type"],
+                        "startDatetime": block["start_dt"],
+                        "endDatetime": block["end_dt"],
+                        "reason": block["reason"],
+                    },
+                },
             )
         except db.SlotTakenError:
             return self.end_json(409, {"error": "slot taken"})
