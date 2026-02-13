@@ -58,6 +58,7 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS bookings (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            booking_reference TEXT UNIQUE,
             trailer_type  TEXT NOT NULL CHECK (trailer_type IN ('GALLER','KAP')),
             rental_type   TEXT NOT NULL CHECK (rental_type IN ('TWO_HOURS','FULL_DAY')),
             start_dt      TEXT NOT NULL,
@@ -97,6 +98,17 @@ def init_db() -> None:
         conn.execute("ALTER TABLE bookings ADD COLUMN expires_at TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE bookings ADD COLUMN booking_reference TEXT")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_booking_reference
+        ON bookings (booking_reference)
+        WHERE booking_reference IS NOT NULL
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -246,15 +258,16 @@ def create_booking(
             conn.execute("ROLLBACK")
             raise SlotTakenError("slot taken")
         # Insert booking
-        # Compute expiry timestamp 10 minutes from now for new holds.  The
+        # Compute expiry timestamp 10 minutes from now for new holds.  The
         # expiry is stored as ISO 8601 (naive) string.  It will be used
         # later to cancel expired reservations.
-        expires_at = (datetime.now() + timedelta(minutes=10)).isoformat(timespec="seconds")
+        created_at = datetime.now()
+        expires_at = (created_at + timedelta(minutes=10)).isoformat(timespec="seconds")
 
         cur = conn.execute(
             """
-            INSERT INTO bookings (trailer_type, rental_type, start_dt, end_dt, price, status, created_at, swish_id, expires_at)
-            VALUES (?, ?, ?, ?, ?, 'PENDING_PAYMENT', ?, NULL, ?)
+            INSERT INTO bookings (booking_reference, trailer_type, rental_type, start_dt, end_dt, price, status, created_at, swish_id, expires_at)
+            VALUES (NULL, ?, ?, ?, ?, ?, 'PENDING_PAYMENT', ?, NULL, ?)
             """,
             (
                 trailer_type,
@@ -262,11 +275,20 @@ def create_booking(
                 start_datetime.isoformat(timespec="minutes"),
                 end_datetime.isoformat(timespec="minutes"),
                 price,
-                datetime.now().isoformat(timespec="seconds"),
+                created_at.isoformat(timespec="seconds"),
                 expires_at,
             ),
         )
         booking_id = cur.lastrowid
+        booking_reference = _generate_booking_reference(created_at, booking_id)
+        conn.execute(
+            """
+            UPDATE bookings
+            SET booking_reference = ?
+            WHERE id = ?
+            """,
+            (booking_reference, booking_id),
+        )
         conn.execute("COMMIT")
         return booking_id, price
     except Exception:
@@ -423,3 +445,8 @@ def get_bookings(status: Optional[str] = None) -> list[dict]:
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+def _generate_booking_reference(created_at: datetime, booking_id: int) -> str:
+    """Build a deterministic reference ID for customer-facing flows."""
+    return f"DHS-{created_at.strftime('%Y%m%d')}-{booking_id:06d}"

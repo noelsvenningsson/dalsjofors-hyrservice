@@ -124,6 +124,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_availability(query_params)
         if path == "/api/payment":
             return self.handle_payment(query_params)
+        if path == "/api/admin/bookings":
+            return self.handle_admin_bookings(query_params)
 
         # Dev/test endpoint
         if path == "/api/health":
@@ -260,6 +262,32 @@ class Handler(BaseHTTPRequestHandler):
         details = self._get_or_create_payment_details(booking_id)
         return self.end_json(200, details)
 
+    def handle_admin_bookings(self, params: Dict[str, str]) -> None:
+        """Return booking rows for admin tooling."""
+        status = params.get("status")
+        status_u = status.upper() if status else None
+        if status_u and status_u not in {"PENDING_PAYMENT", "CONFIRMED", "CANCELLED"}:
+            return self.end_json(400, {"error": "Invalid status"})
+        bookings = db.get_bookings(status_u)
+        payload_rows = []
+        for booking in bookings:
+            payload_rows.append(
+                {
+                    "bookingId": booking["id"],
+                    "bookingReference": booking.get("booking_reference"),
+                    "trailerType": booking["trailer_type"],
+                    "rentalType": booking["rental_type"],
+                    "startDt": booking["start_dt"],
+                    "endDt": booking["end_dt"],
+                    "price": booking["price"],
+                    "status": booking["status"],
+                    "createdAt": booking["created_at"],
+                    "swishId": booking.get("swish_id"),
+                    "expiresAt": booking.get("expires_at"),
+                }
+            )
+        return self.end_json(200, {"bookings": payload_rows})
+
     def handle_hold(self) -> None:
         # Parse JSON body
         try:
@@ -300,7 +328,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.end_json(400, {"error": str(ve)})
         except Exception as e:
             return self.end_json(500, {"error": str(e)})
-        return self.end_json(201, {"bookingId": booking_id, "price": price})
+        booking = db.get_booking_by_id(booking_id)
+        return self.end_json(
+            201,
+            {
+                "bookingId": booking_id,
+                "bookingReference": booking.get("booking_reference") if booking else None,
+                "price": price,
+            },
+        )
 
     def handle_swish_callback(self) -> None:
         """Handle callbacks from Swish Commerce API.
@@ -356,7 +392,8 @@ class Handler(BaseHTTPRequestHandler):
         details = self._get_or_create_payment_details(booking_id)
         price = details["price"]
         qr_url = details["qrUrl"]
-        message = f"DHS-{booking_id}"
+        message = details["swishMessage"]
+        booking_reference = details.get("bookingReference")
         # Compose simple HTML for payment page
         html = f"""
 <!doctype html><html lang=\"sv\"><head>
@@ -378,6 +415,7 @@ class Handler(BaseHTTPRequestHandler):
     <p><strong>Belopp:</strong> {price} kr</p>
     <p><strong>Mottagare:</strong> 1234 945580</p>
     <p><strong>Meddelande:</strong> {message}</p>
+    <p><strong>Bokningsreferens:</strong> {booking_reference or "saknas"}</p>
     <img src=\"{qr_url}\" alt=\"Swish QR\" width=\"280\" height=\"280\" />
   </div>
   <div class=\"card\">
@@ -425,6 +463,7 @@ class Handler(BaseHTTPRequestHandler):
         end_time = booking["end_dt"][11:]
         summary_lines = [
             f"Boknings-ID: {booking['id']}",
+            f"Bokningsreferens: {booking.get('booking_reference') or 'saknas'}",
             f"Släp: {trailer_text}",
             f"Datum: {start_date}",
             f"Start: {start_time}",
@@ -490,13 +529,16 @@ class Handler(BaseHTTPRequestHandler):
             db.set_swish_id(booking_id, swish_id)
         payee = os.environ.get("SWISH_PAYEE", "1234945580")
         amount_str = f"{amount:.2f}".replace(".", ",")
-        message = f"DHS-{booking_id}"
+        booking_reference = booking.get("booking_reference")
+        message = booking_reference or f"DHS-{booking_id}"
         payload = f"C{payee};{amount_str};{urllib.parse.quote(message, safe='')};0"
         qr_url = "https://quickchart.io/qr?size=320&text=" + urllib.parse.quote(payload, safe="")
         return {
             "bookingId": booking_id,
+            "bookingReference": booking_reference,
             "price": amount,
             "swishId": swish_id,
+            "swishMessage": message,
             "qrUrl": qr_url,
             "payload": payload,
         }
