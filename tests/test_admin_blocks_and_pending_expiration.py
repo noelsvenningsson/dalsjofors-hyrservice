@@ -243,10 +243,10 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
             },
         )
         self.assertEqual(missing_status, 400)
-        self.assertEqual(
-            missing_payload.get("error"),
-            "trailerType and datetime range are required; use startDatetime/endDatetime or start/end",
-        )
+        self.assertIn("errorInfo", missing_payload)
+        self.assertEqual(missing_payload.get("errorInfo", {}).get("code"), "invalid_request")
+        self.assertIn("startDatetime", missing_payload.get("errorInfo", {}).get("details", {}).get("fields", {}))
+        self.assertIn("endDatetime", missing_payload.get("errorInfo", {}).get("details", {}).get("fields", {}))
 
         invalid_status, invalid_payload = self._post_json(
             "/api/admin/blocks",
@@ -257,10 +257,9 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
             },
         )
         self.assertEqual(invalid_status, 400)
-        self.assertEqual(
-            invalid_payload.get("error"),
-            "Invalid datetime format; expected ISO 8601 in startDatetime/endDatetime or start/end",
-        )
+        self.assertIn("errorInfo", invalid_payload)
+        self.assertEqual(invalid_payload.get("errorInfo", {}).get("code"), "invalid_request")
+        self.assertEqual(invalid_payload.get("errorInfo", {}).get("details", {}).get("fields", {}).get("startDatetime"), "Expected ISO 8601 datetime (e.g. YYYY-MM-DDTHH:MM)")
 
 
 if __name__ == "__main__":

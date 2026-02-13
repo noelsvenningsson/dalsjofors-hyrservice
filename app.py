@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.parse
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -60,6 +61,8 @@ import db
 
 ROOT_DIR = Path(__file__).resolve().parent
 STATIC_DIR = ROOT_DIR / "static"
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 def parse_query(query: str) -> Dict[str, str]:
@@ -85,6 +88,102 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def api_error(
+        self,
+        status: int,
+        code: str,
+        message: str,
+        *,
+        details: Optional[Dict[str, Any]] = None,
+        legacy_error: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Return stable API errors with legacy compatibility."""
+        payload: Dict[str, Any] = {
+            "error": legacy_error or message,
+            "errorInfo": {"code": code, "message": message},
+        }
+        if details is not None:
+            payload["errorInfo"]["details"] = details
+        if extra:
+            payload.update(extra)
+        self.end_json(status, payload)
+
+    def _invalid_field_error(self, field_errors: Dict[str, str], message: str = "Invalid request") -> None:
+        self.api_error(
+            400,
+            "invalid_request",
+            message,
+            details={"fields": field_errors},
+            legacy_error="; ".join([f"{field}: {msg}" for field, msg in field_errors.items()]),
+        )
+
+    def _validate_trailer_type(self, trailer_type: Optional[str], required: bool = True) -> Optional[str]:
+        trailer_value = (trailer_type or "").strip().upper()
+        if not trailer_value:
+            if required:
+                self._invalid_field_error({"trailerType": "This field is required"})
+            return None
+        if trailer_value not in db.VALID_TRAILER_TYPES:
+            self._invalid_field_error(
+                {"trailerType": f"Must be one of: {', '.join(sorted(db.VALID_TRAILER_TYPES))}"}
+            )
+            return None
+        return trailer_value
+
+    def _validate_rental_type(self, rental_type: Optional[str]) -> Optional[str]:
+        rental_value = (rental_type or "").strip().upper()
+        if not rental_value:
+            self._invalid_field_error({"rentalType": "This field is required"})
+            return None
+        if rental_value not in db.VALID_RENTAL_TYPES:
+            self._invalid_field_error(
+                {"rentalType": f"Must be one of: {', '.join(sorted(db.VALID_RENTAL_TYPES))}"}
+            )
+            return None
+        return rental_value
+
+    def _validate_date(self, date_str: Optional[str]) -> Optional[str]:
+        value = (date_str or "").strip()
+        if not value:
+            self._invalid_field_error({"date": "This field is required"})
+            return None
+        if not DATE_RE.match(value):
+            self._invalid_field_error({"date": "Expected format YYYY-MM-DD"})
+            return None
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            self._invalid_field_error({"date": "Invalid calendar date"})
+            return None
+        return value
+
+    def _validate_start_time(self, start_time: Optional[str], required: bool) -> Optional[str]:
+        value = (start_time or "").strip()
+        if not value:
+            if required:
+                self._invalid_field_error({"startTime": "This field is required for TWO_HOURS"})
+            return None
+        if not TIME_RE.match(value):
+            self._invalid_field_error({"startTime": "Expected format HH:MM"})
+            return None
+        return value
+
+    def _parse_iso_datetime_field(self, field_name: str, raw_value: Optional[str]) -> Optional[datetime]:
+        value = (raw_value or "").strip()
+        if not value:
+            self._invalid_field_error({field_name: "This field is required"})
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            self._invalid_field_error({field_name: "Expected ISO 8601 datetime (e.g. YYYY-MM-DDTHH:MM)"})
+            return None
+        if "T" not in value:
+            self._invalid_field_error({field_name: "Expected ISO 8601 datetime (e.g. YYYY-MM-DDTHH:MM)"})
+            return None
+        return parsed
 
     # ---- Request handlers ----
 
@@ -215,44 +314,37 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_price(self, params: Dict[str, str]) -> None:
         trailer_type = params.get("trailerType")
-        rental_type = params.get("rentalType")
-        date_str = params.get("date")
-        if not rental_type or not date_str:
-            return self.end_json(400, {"error": "rentalType and date are required"})
+        rental_type_u = self._validate_rental_type(params.get("rentalType"))
+        date_str = self._validate_date(params.get("date"))
+        if rental_type_u is None or date_str is None:
+            return
         # Backward compatible: old clients did not send trailerType.
-        trailer_type_u = (trailer_type or "GALLER").upper()
-        rental_type_u = rental_type.upper()
+        trailer_type_u = self._validate_trailer_type(trailer_type or "GALLER", required=True)
+        if trailer_type_u is None:
+            return
+        dt = datetime.strptime(date_str + "T00:00", "%Y-%m-%dT%H:%M")
         try:
-            # If only date is given, assume start of day for weekday determination
-            dt = datetime.fromisoformat(date_str + "T00:00")
             price = db.calculate_price(dt, rental_type_u, trailer_type_u)
-        except Exception as e:
-            return self.end_json(400, {"error": str(e)})
+        except ValueError as e:
+            return self.api_error(400, "invalid_request", str(e), legacy_error=str(e))
         return self.end_json(200, {"price": price})
 
     def handle_availability(self, params: Dict[str, str]) -> None:
-        trailer_type = params.get("trailerType")
-        rental_type = params.get("rentalType")
-        date_str = params.get("date")
-        start_time = params.get("startTime")
-        # Basic validation
-        if not trailer_type or not rental_type or not date_str:
-            return self.end_json(400, {"error": "trailerType, rentalType and date are required"})
-        trailer_type_u = trailer_type.upper()
-        rental_type_u = rental_type.upper()
-        try:
-            if rental_type_u == "FULL_DAY":
-                start_dt = datetime.fromisoformat(date_str + "T00:00")
-                end_dt = datetime.fromisoformat(date_str + "T23:59")
-            elif rental_type_u == "TWO_HOURS":
-                if not start_time:
-                    return self.end_json(400, {"error": "startTime required for TWO_HOURS"})
-                start_dt = datetime.fromisoformat(date_str + "T" + start_time)
-                end_dt = start_dt + timedelta(hours=2)
-            else:
-                return self.end_json(400, {"error": "Invalid rentalType"})
-        except Exception as e:
-            return self.end_json(400, {"error": str(e)})
+        trailer_type_u = self._validate_trailer_type(params.get("trailerType"))
+        rental_type_u = self._validate_rental_type(params.get("rentalType"))
+        date_str = self._validate_date(params.get("date"))
+        if trailer_type_u is None or rental_type_u is None or date_str is None:
+            return
+
+        if rental_type_u == "FULL_DAY":
+            start_dt = datetime.strptime(date_str + "T00:00", "%Y-%m-%dT%H:%M")
+            end_dt = datetime.strptime(date_str + "T23:59", "%Y-%m-%dT%H:%M")
+        else:
+            start_time = self._validate_start_time(params.get("startTime"), required=True)
+            if start_time is None:
+                return
+            start_dt = datetime.strptime(f"{date_str}T{start_time}", "%Y-%m-%dT%H:%M")
+            end_dt = start_dt + timedelta(hours=2)
         try:
             block = db.find_block_overlap(trailer_type_u, start_dt, end_dt)
             if block:
@@ -262,7 +354,7 @@ class Handler(BaseHTTPRequestHandler):
                     trailer_type_u, start_dt, end_dt
                 )
         except Exception as e:
-            return self.end_json(500, {"error": str(e)})
+            return self.api_error(500, "internal_error", "Internal server error", legacy_error=str(e))
         remaining = max(0, 1 - overlapping)
         available = remaining > 0
         return self.end_json(200, {"available": available, "remaining": remaining})
@@ -323,14 +415,16 @@ class Handler(BaseHTTPRequestHandler):
     def handle_admin_blocks_get(self, params: Dict[str, str]) -> None:
         start_dt_str = params.get("startDatetime")
         end_dt_str = params.get("endDatetime")
-        try:
-            start_dt = datetime.fromisoformat(start_dt_str) if start_dt_str else None
-            end_dt = datetime.fromisoformat(end_dt_str) if end_dt_str else None
-        except Exception:
-            return self.end_json(400, {"error": "Invalid datetime format"})
+
+        start_dt = self._parse_iso_datetime_field("startDatetime", start_dt_str) if start_dt_str else None
+        if start_dt_str and start_dt is None:
+            return
+        end_dt = self._parse_iso_datetime_field("endDatetime", end_dt_str) if end_dt_str else None
+        if end_dt_str and end_dt is None:
+            return
 
         if start_dt and end_dt and end_dt <= start_dt:
-            return self.end_json(400, {"error": "endDatetime must be after startDatetime"})
+            return self._invalid_field_error({"endDatetime": "Must be after startDatetime"})
 
         rows = db.list_blocks(start_dt, end_dt)
         payload_rows = []
@@ -353,34 +447,34 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(length) if length > 0 else b"{}"
             data = json.loads(body.decode("utf-8"))
         except Exception:
-            return self.end_json(400, {"error": "Invalid JSON"})
+            return self.api_error(400, "invalid_json", "Request body must be valid JSON", legacy_error="Invalid JSON")
 
-        trailer_type = (data.get("trailerType") or "").upper()
+        trailer_type = self._validate_trailer_type(data.get("trailerType"))
+        if trailer_type is None:
+            return
         start_dt_str, end_dt_str = self._resolve_block_datetime_fields(data)
         reason = data.get("reason") or ""
-        if not trailer_type or not start_dt_str or not end_dt_str:
-            return self.end_json(
-                400,
-                {
-                    "error": "trailerType and datetime range are required; use startDatetime/endDatetime or start/end"
-                },
-            )
-        try:
-            start_dt = datetime.fromisoformat(start_dt_str)
-            end_dt = datetime.fromisoformat(end_dt_str)
-        except Exception:
-            return self.end_json(
-                400,
-                {"error": "Invalid datetime format; expected ISO 8601 in startDatetime/endDatetime or start/end"},
-            )
+        missing_fields: Dict[str, str] = {}
+        if not start_dt_str:
+            missing_fields["startDatetime"] = "Provide startDatetime or start"
+        if not end_dt_str:
+            missing_fields["endDatetime"] = "Provide endDatetime or end"
+        if missing_fields:
+            return self._invalid_field_error(missing_fields, "Missing required fields")
+        start_dt = self._parse_iso_datetime_field("startDatetime", start_dt_str)
+        if start_dt is None:
+            return
+        end_dt = self._parse_iso_datetime_field("endDatetime", end_dt_str)
+        if end_dt is None:
+            return
         if end_dt <= start_dt:
-            return self.end_json(400, {"error": "endDatetime must be after startDatetime"})
+            return self._invalid_field_error({"endDatetime": "Must be after startDatetime"})
         try:
             row = db.create_block(trailer_type, start_dt, end_dt, reason)
         except ValueError as e:
-            return self.end_json(400, {"error": str(e)})
+            return self.api_error(400, "invalid_request", str(e), legacy_error=str(e))
         except Exception as e:
-            return self.end_json(500, {"error": str(e)})
+            return self.api_error(500, "internal_error", "Internal server error", legacy_error=str(e))
 
         return self.end_json(
             201,
@@ -397,14 +491,14 @@ class Handler(BaseHTTPRequestHandler):
     def handle_admin_blocks_delete(self, params: Dict[str, str]) -> None:
         block_id_str = params.get("id")
         if not block_id_str:
-            return self.end_json(400, {"error": "id is required"})
+            return self._invalid_field_error({"id": "This field is required"})
         try:
             block_id = int(block_id_str)
         except ValueError:
-            return self.end_json(400, {"error": "id must be an integer"})
+            return self._invalid_field_error({"id": "Must be an integer"})
 
         if not db.delete_block(block_id):
-            return self.end_json(404, {"error": "Block not found"})
+            return self.api_error(404, "block_not_found", "Block not found", legacy_error="Block not found")
         return self.end_json(200, {"deleted": True, "id": block_id})
 
     def handle_admin_expire_pending(self) -> None:
@@ -418,28 +512,22 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(length) if length > 0 else b"{}"
             data = json.loads(body.decode("utf-8"))
         except Exception:
-            return self.end_json(400, {"error": "Invalid JSON"})
-        trailer_type = data.get("trailerType")
-        rental_type = data.get("rentalType")
-        date_str = data.get("date")
-        start_time = data.get("startTime")
-        if not trailer_type or not rental_type or not date_str:
-            return self.end_json(400, {"error": "trailerType, rentalType and date are required"})
-        try:
-            rental_type_u = rental_type.upper()
-            trailer_type_u = trailer_type.upper()
-            if rental_type_u == "FULL_DAY":
-                start_dt = datetime.fromisoformat(date_str + "T00:00")
-                end_dt = datetime.fromisoformat(date_str + "T23:59")
-            elif rental_type_u == "TWO_HOURS":
-                if not start_time:
-                    return self.end_json(400, {"error": "startTime required for TWO_HOURS"})
-                start_dt = datetime.fromisoformat(date_str + "T" + start_time)
-                end_dt = start_dt + timedelta(hours=2)
-            else:
-                return self.end_json(400, {"error": "Invalid rentalType"})
-        except Exception as e:
-            return self.end_json(400, {"error": str(e)})
+            return self.api_error(400, "invalid_json", "Request body must be valid JSON", legacy_error="Invalid JSON")
+        trailer_type_u = self._validate_trailer_type(data.get("trailerType"))
+        rental_type_u = self._validate_rental_type(data.get("rentalType"))
+        date_str = self._validate_date(data.get("date"))
+        if trailer_type_u is None or rental_type_u is None or date_str is None:
+            return
+
+        if rental_type_u == "FULL_DAY":
+            start_dt = datetime.strptime(date_str + "T00:00", "%Y-%m-%dT%H:%M")
+            end_dt = datetime.strptime(date_str + "T23:59", "%Y-%m-%dT%H:%M")
+        else:
+            start_time = self._validate_start_time(data.get("startTime"), required=True)
+            if start_time is None:
+                return
+            start_dt = datetime.strptime(f"{date_str}T{start_time}", "%Y-%m-%dT%H:%M")
+            end_dt = start_dt + timedelta(hours=2)
         # Create booking hold using existing logic
         try:
             booking_id, price = db.create_booking(
@@ -447,10 +535,21 @@ class Handler(BaseHTTPRequestHandler):
             )
         except db.SlotBlockedError as block_err:
             block = block_err.block
-            return self.end_json(
+            return self.api_error(
                 409,
-                {
-                    "error": "slot blocked",
+                "slot_blocked",
+                "Requested slot overlaps an admin block",
+                legacy_error="slot blocked",
+                details={
+                    "block": {
+                        "id": block["id"],
+                        "trailerType": block["trailer_type"],
+                        "startDatetime": block["start_dt"],
+                        "endDatetime": block["end_dt"],
+                        "reason": block["reason"],
+                    }
+                },
+                extra={
                     "message": "Requested slot overlaps an admin block",
                     "block": {
                         "id": block["id"],
@@ -462,11 +561,11 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
         except db.SlotTakenError:
-            return self.end_json(409, {"error": "slot taken"})
+            return self.api_error(409, "slot_taken", "Requested slot is already taken", legacy_error="slot taken")
         except ValueError as ve:
-            return self.end_json(400, {"error": str(ve)})
+            return self.api_error(400, "invalid_request", str(ve), legacy_error=str(ve))
         except Exception as e:
-            return self.end_json(500, {"error": str(e)})
+            return self.api_error(500, "internal_error", "Internal server error", legacy_error=str(e))
         booking = db.get_booking_by_id(booking_id)
         return self.end_json(
             201,
