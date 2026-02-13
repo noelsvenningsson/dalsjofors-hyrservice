@@ -124,10 +124,66 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
         self.assertIn("bookingId", hold_payload)
         self.assertIn("price", hold_payload)
 
+    def test_slot_allows_two_bookings_but_rejects_third(self) -> None:
+        payload = {
+            "trailerType": "GALLER",
+            "rentalType": "TWO_HOURS",
+            "date": "2026-05-09",
+            "startTime": "10:00",
+        }
+
+        first_status, first_payload = self._post_json("/api/hold", payload)
+        self.assertEqual(first_status, 201)
+        self.assertIn("bookingId", first_payload)
+
+        second_status, second_payload = self._post_json("/api/hold", payload)
+        self.assertEqual(second_status, 201)
+        self.assertIn("bookingId", second_payload)
+
+        third_status, third_payload = self._post_json("/api/hold", payload)
+        self.assertEqual(third_status, 409)
+        self.assertEqual(third_payload.get("error"), "slot taken")
+
+    def test_availability_remaining_reflects_capacity_two(self) -> None:
+        params = {
+            "trailerType": "KAP",
+            "rentalType": "TWO_HOURS",
+            "date": "2026-05-10",
+            "startTime": "10:00",
+        }
+
+        status_before, payload_before = self._get_json("/api/availability", params)
+        self.assertEqual(status_before, 200)
+        self.assertEqual(payload_before.get("remaining"), 2)
+        self.assertTrue(payload_before.get("available"))
+
+        hold_payload = {
+            "trailerType": "KAP",
+            "rentalType": "TWO_HOURS",
+            "date": "2026-05-10",
+            "startTime": "10:00",
+        }
+        first_status, _ = self._post_json("/api/hold", hold_payload)
+        self.assertEqual(first_status, 201)
+
+        status_after_first, payload_after_first = self._get_json("/api/availability", params)
+        self.assertEqual(status_after_first, 200)
+        self.assertEqual(payload_after_first.get("remaining"), 1)
+        self.assertTrue(payload_after_first.get("available"))
+
+        second_status, _ = self._post_json("/api/hold", hold_payload)
+        self.assertEqual(second_status, 201)
+
+        status_after_second, payload_after_second = self._get_json("/api/availability", params)
+        self.assertEqual(status_after_second, 200)
+        self.assertEqual(payload_after_second.get("remaining"), 0)
+        self.assertFalse(payload_after_second.get("available"))
+
     def test_pending_payment_expires_and_no_longer_blocks_slot(self) -> None:
         start = datetime(2026, 5, 3, 10, 0)
         end = start + timedelta(hours=2)
         booking_id, _ = db.create_booking("KAP", "TWO_HOURS", start, end)
+        second_booking_id, _ = db.create_booking("KAP", "TWO_HOURS", start, end)
 
         conn = sqlite3.connect(db.DB_PATH)
         try:
@@ -140,11 +196,19 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
                 """,
                 ((datetime.now() - timedelta(minutes=1)).isoformat(timespec="seconds"), booking_id),
             )
+            conn.execute(
+                """
+                UPDATE bookings
+                SET status = 'CONFIRMED'
+                WHERE id = ?
+                """,
+                (second_booking_id,),
+            )
             conn.commit()
         finally:
             conn.close()
 
-        # Expired pending rows should not block availability even before cleanup.
+        # Expired pending rows should not consume one of the two slots.
         self.assertTrue(db.check_availability("KAP", start, end))
 
         status, payload = self._post_json("/api/admin/expire-pending", {})

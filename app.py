@@ -348,14 +348,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             block = db.find_block_overlap(trailer_type_u, start_dt, end_dt)
             if block:
-                overlapping = 1
+                remaining = 0
             else:
                 overlapping = db.count_overlapping_active_bookings(
                     trailer_type_u, start_dt, end_dt
                 )
+                remaining = max(0, db.TRAILERS_PER_TYPE - overlapping)
         except Exception as e:
             return self.api_error(500, "internal_error", "Internal server error", legacy_error=str(e))
-        remaining = max(0, 1 - overlapping)
         available = remaining > 0
         return self.end_json(200, {"available": available, "remaining": remaining})
 

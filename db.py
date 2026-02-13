@@ -43,6 +43,7 @@ from typing import Any, Optional, Tuple
 
 DB_PATH = Path(__file__).resolve().parent / "database.db"
 PENDING_PAYMENT_EXPIRATION_MINUTES = 15
+TRAILERS_PER_TYPE = 2
 
 
 def init_db() -> None:
@@ -293,7 +294,7 @@ def get_availability_conflict(
     overlaps = count_overlapping_active_bookings(
         trailer_type, start_datetime, end_datetime, connection=connection, now=now
     )
-    if overlaps > 0:
+    if overlaps >= TRAILERS_PER_TYPE:
         return {"type": "BOOKING", "overlaps": overlaps}
     return None
 
@@ -307,9 +308,8 @@ def check_availability(
     """Check whether a trailer of the given type is available for a time span.
 
     The system maintains exactly two units of each trailer type.  This
-    function queries all existing bookings of the given type with status
-    other than ``CANCELLED``, counts how many overlap with the requested
-    period and returns ``True`` if no overlap exists.
+    function counts overlapping active bookings and returns ``True`` if
+    the configured capacity has not been reached.
 
     Args:
         trailer_type: ``"GALLER"`` or ``"KAP"``.
