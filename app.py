@@ -135,7 +135,14 @@ class Handler(BaseHTTPRequestHandler):
 
         # Dev/test endpoint
         if path == "/api/health":
-            return self.end_json(200, {"ok": True})
+            return self.end_json(
+                200,
+                {
+                    "ok": True,
+                    "service": "dalsjofors-hyrservice",
+                    "time": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
 
         # Payment pages
         if path == "/pay":
@@ -721,7 +728,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            # Client disconnected before the response body was fully sent.
+            return
 
 
 def run() -> None:
