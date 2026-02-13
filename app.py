@@ -14,8 +14,9 @@ Endpoints
 * ``GET /`` – serves the HTML wizard (index.html).
 * ``GET /static/<path>`` – serves static assets (CSS/JS/SVG).
 * ``GET /api/price`` – query parameters:
-  ``rentalType`` (``TWO_HOURS`` or ``FULL_DAY``) and ``date`` (ISO
-  YYYY-MM-DD).  Returns ``{price: int}``.
+  ``trailerType`` (``GALLER`` or ``KAP``), ``rentalType``
+  (``TWO_HOURS`` or ``FULL_DAY``) and ``date`` (ISO YYYY-MM-DD).
+  Returns ``{price: int}``.
 * ``GET /api/availability`` – query parameters:
   ``trailerType`` (``GALLER`` or ``KAP``), ``rentalType``,
   ``date``, and (optionally) ``startTime`` (HH:MM).  Calculates start
@@ -165,15 +166,18 @@ class Handler(BaseHTTPRequestHandler):
     # ---- API implementations ----
 
     def handle_price(self, params: Dict[str, str]) -> None:
+        trailer_type = params.get("trailerType")
         rental_type = params.get("rentalType")
         date_str = params.get("date")
         if not rental_type or not date_str:
             return self.end_json(400, {"error": "rentalType and date are required"})
+        # Backward compatible: old clients did not send trailerType.
+        trailer_type_u = (trailer_type or "GALLER").upper()
         rental_type_u = rental_type.upper()
         try:
             # If only date is given, assume start of day for weekday determination
             dt = datetime.fromisoformat(date_str + "T00:00")
-            price = db.calculate_price(dt, rental_type_u)
+            price = db.calculate_price(dt, rental_type_u, trailer_type_u)
         except Exception as e:
             return self.end_json(400, {"error": str(e)})
         return self.end_json(200, {"price": price})

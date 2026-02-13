@@ -100,8 +100,10 @@ def init_db() -> None:
     conn.commit()
     conn.close()
 
+VALID_TRAILER_TYPES = {"GALLER", "KAP"}
+VALID_RENTAL_TYPES = {"TWO_HOURS", "FULL_DAY"}
 
-def calculate_price(start_datetime: datetime, rental_type: str) -> int:
+def calculate_price(start_datetime: datetime, rental_type: str, trailer_type: str) -> int:
     """Calculate the price for a booking.
 
     Two‑hour rentals always cost 200 SEK.  Full day rentals cost 250 SEK
@@ -113,11 +115,15 @@ def calculate_price(start_datetime: datetime, rental_type: str) -> int:
     Args:
         start_datetime: The start of the hire period.
         rental_type: ``"TWO_HOURS"`` or ``"FULL_DAY"``.
+        trailer_type: ``"GALLER"`` or ``"KAP"``.
 
     Returns:
         The price in Swedish kronor as an integer.
     """
     rental_type = rental_type.upper()
+    trailer_type = trailer_type.upper()
+    if trailer_type not in VALID_TRAILER_TYPES:
+        raise ValueError(f"Unknown trailer type: {trailer_type}")
     if rental_type == "TWO_HOURS":
         return 200
     if rental_type != "FULL_DAY":
@@ -204,12 +210,11 @@ def create_booking(
     rental_type: str,
     start_datetime: datetime,
     end_datetime: datetime,
-    price: Optional[int] = None,
 ) -> Tuple[int, int]:
     """Attempt to create a new booking and return its ID and price.
 
     The function runs in a single database transaction.  It first
-    recalculates the price (unless provided) and checks availability.  If
+    recalculates the price and checks availability.  If
     no trailer is free the function raises ``ValueError``.  Otherwise it
     inserts a new booking with status ``PENDING_PAYMENT`` and returns
     ``(booking_id, price)``.
@@ -219,9 +224,6 @@ def create_booking(
         rental_type: ``"TWO_HOURS"`` or ``"FULL_DAY"``.
         start_datetime: Inclusive start of the hire.
         end_datetime: Exclusive end of the hire.
-        price: Optional precomputed price.  If ``None`` the price is
-            calculated from ``start_datetime`` and ``rental_type``.
-
     Returns:
         A tuple ``(booking_id, price)`` for the newly created booking.
 
@@ -230,8 +232,7 @@ def create_booking(
     """
     trailer_type = trailer_type.upper()
     rental_type = rental_type.upper()
-    if price is None:
-        price = calculate_price(start_datetime, rental_type)
+    price = calculate_price(start_datetime, rental_type, trailer_type)
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.isolation_level = None  # Use manual transaction management
