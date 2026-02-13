@@ -48,6 +48,7 @@ Then open ``http://localhost:8000`` in your browser.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.parse
@@ -57,12 +58,15 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import db
+import notifications
 
 
 ROOT_DIR = Path(__file__).resolve().parent
 STATIC_DIR = ROOT_DIR / "static"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+logger = logging.getLogger(__name__)
+NOTIFIER = notifications.create_notification_service_from_env()
 
 
 def parse_query(query: str) -> Dict[str, str]:
@@ -567,6 +571,11 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self.api_error(500, "internal_error", "Internal server error", legacy_error=str(e))
         booking = db.get_booking_by_id(booking_id)
+        if booking:
+            try:
+                NOTIFIER.notify_booking_created(booking)
+            except Exception:
+                logger.exception("notification dispatch failed event=booking.created booking_id=%s", booking_id)
         return self.end_json(
             201,
             {
@@ -602,7 +611,18 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self.end_json(400, {"error": "paymentReference must be integer"})
         if status == "PAID":
+            booking_before = db.get_booking_by_id(booking_id)
+            was_pending = bool(booking_before and booking_before.get("status") == "PENDING_PAYMENT")
             db.mark_confirmed(booking_id)
+            booking_after = db.get_booking_by_id(booking_id)
+            if was_pending and booking_after and booking_after.get("status") == "CONFIRMED":
+                try:
+                    NOTIFIER.notify_booking_confirmed(booking_after)
+                except Exception:
+                    logger.exception(
+                        "notification dispatch failed event=booking.confirmed booking_id=%s",
+                        booking_id,
+                    )
         elif status in ("CANCELLED", "EXPIRED", "ERROR"):
             db.cancel_booking(booking_id)
         return self.end_json(200, {"ok": True})

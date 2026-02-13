@@ -55,6 +55,8 @@ Use `.env.example` as the source of truth.
 
 - `PORT`: HTTP listen port (default `8000`)
 - `SWISH_PAYEE`: Swish payee number used when creating payment payloads
+- `NOTIFY_WEBHOOK_URL`: optional webhook endpoint for booking notifications
+- `NOTIFY_WEBHOOK_SECRET`: optional HMAC secret for webhook signature header
 
 ## Deployment Notes (Render)
 
