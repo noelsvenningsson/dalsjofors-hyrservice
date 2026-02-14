@@ -942,10 +942,15 @@ class Handler(BaseHTTPRequestHandler):
         price = details["price"]
         qr_url = details["qrUrl"]
         message = details["swishMessage"]
-        payload = details["payload"]
         booking_reference = details.get("bookingReference")
         payee = os.environ.get("SWISH_PAYEE", "1234945580")
-        swish_deep_link = f"swish://payment?data={urllib.parse.quote(payload, safe='')}"
+        amount_for_link = f"{price:.2f}"
+        swish_deep_link = (
+            "swish://payment"
+            f"?payee={urllib.parse.quote(payee, safe='')}"
+            f"&amount={urllib.parse.quote(amount_for_link, safe='')}"
+            f"&message={urllib.parse.quote(message, safe='')}"
+        )
         # Compose payment page with polished styling; no booking/payment behavior changes.
         html = f"""
 <!doctype html><html lang=\"sv\"><head>
@@ -1095,7 +1100,7 @@ class Handler(BaseHTTPRequestHandler):
     <div class=\"swish-actions\">
       <button id=\"open-swish\" type=\"button\" class=\"swish-open-btn\">Öppna i Swish</button>
       <p class=\"swish-help\" id=\"swish-help\">Öppna Swish på den här enheten för snabb betalning.</p>
-      <p class=\"swish-fallback\" id=\"swish-fallback\">Swish öppnades inte automatiskt. Fortsätt genom att scanna QR-koden nedan.</p>
+      <p class=\"swish-fallback\" id=\"swish-fallback\">Använd QR-koden nedan.</p>
     </div>
     <p class=\"qr-alt\">Använd Swish på annan enhet</p>
     <div class=\"qr-wrap\">
