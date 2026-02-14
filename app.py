@@ -943,14 +943,9 @@ class Handler(BaseHTTPRequestHandler):
         qr_url = details["qrUrl"]
         message = details["swishMessage"]
         booking_reference = details.get("bookingReference")
+        swish_payload = details["payload"]
         payee = os.environ.get("SWISH_PAYEE", "1234945580")
-        amount_for_link = f"{price:.2f}"
-        swish_deep_link = (
-            "swish://payment"
-            f"?payee={urllib.parse.quote(payee, safe='')}"
-            f"&amount={urllib.parse.quote(amount_for_link, safe='')}"
-            f"&message={urllib.parse.quote(message, safe='')}"
-        )
+        swish_deep_link = f"swish://payment?data={urllib.parse.quote(swish_payload, safe='')}"
         # Compose payment page with polished styling; no booking/payment behavior changes.
         html = f"""
 <!doctype html><html lang=\"sv\"><head>
@@ -1144,7 +1139,7 @@ class Handler(BaseHTTPRequestHandler):
       return;
     }}
     fallbackText.style.display = "none";
-    window.location.href = swishDeepLink;
+    window.location = swishDeepLink;
     setTimeout(() => {{
       if (document.visibilityState === "visible") {{
         showFallbackInstruction();
