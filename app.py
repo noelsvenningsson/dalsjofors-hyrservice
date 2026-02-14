@@ -1340,20 +1340,20 @@ class Handler(BaseHTTPRequestHandler):
         record, generates a fake Swish ID if necessary, persists it via
         ``db.set_swish_id`` and constructs a QR payload.
         """
-        booking = db.get_booking_by_id(booking_id)
+        booking = db.get_booking_by_id(booking_id) 
         amount = booking["price"]
         swish_id = booking.get("swish_id")
         if not swish_id:
             import uuid
-
-            swish_id = str(uuid.uuid4()).replace("-", "")
+            swish_id = str(uuid.uuid4()).replace("-", "")  
             db.set_swish_id(booking_id, swish_id)
         payee = os.environ.get("SWISH_PAYEE", "1234945580")
-        amount_str = f"{amount:.2f}".replace(".", ",")
+        amount_qr = f"{amount:.2f}".replace(".", ",")       
         booking_reference = booking.get("booking_reference")
         message = booking_reference or f"DHS-{booking_id}"
-        payload = f"C{payee};{amount_str};{urllib.parse.quote(message, safe='')};0"
-        qr_url = "https://quickchart.io/qr?size=320&text=" + urllib.parse.quote(payload, safe="")
+        # Build Swish QR payload (encode only once when putting into URL)
+        payload = f"C{payee};{amount_qr};{message};0"
+        qr_url = "https://quickchart.io/qr?size=320&text=" + urllib.parse.quote(payload, safe="")  
         return {
             "bookingId": booking_id,
             "bookingReference": booking_reference,
