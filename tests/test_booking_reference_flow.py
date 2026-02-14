@@ -8,7 +8,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.error import HTTPError
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import app
@@ -122,7 +122,9 @@ class BookingReferenceFlowTest(unittest.TestCase):
         payment_status, payment = self._get_json("/api/payment", {"bookingId": booking_id})
         self.assertEqual(payment_status, 200)
         self.assertEqual(payment.get("bookingReference"), booking_reference)
-        self.assertEqual(payment.get("swishMessage"), booking_reference)
+        self.assertIn("swishAppUrl", payment)
+        self.assertIn("qrImageUrl", payment)
+        self.assertIn("integrationStatus", payment)
 
         admin_status, admin = self._get_json("/api/admin/bookings")
         self.assertEqual(admin_status, 200)
@@ -166,8 +168,9 @@ class BookingReferenceFlowTest(unittest.TestCase):
         payment_status, payment = self._get_json("/api/payment", {"bookingId": old_booking_id})
         self.assertEqual(payment_status, 200)
         self.assertIsNone(payment.get("bookingReference"))
-        self.assertIn("payload", payment)
-        self.assertIn("DHS-", payment.get("swishMessage", ""))
+        self.assertIsNone(payment.get("swishAppUrl"))
+        self.assertEqual(payment.get("integrationStatus"), "NOT_CONFIGURED")
+        self.assertIn("/api/swish/qr?bookingId=", payment.get("qrImageUrl", ""))
 
         admin_status, admin = self._get_json("/api/admin/bookings")
         self.assertEqual(admin_status, 200)
@@ -186,20 +189,26 @@ class BookingReferenceFlowTest(unittest.TestCase):
 
         payment_status, payment = self._get_json("/api/payment", {"bookingId": booking_id})
         self.assertEqual(payment_status, 200)
-        expected_link = f"swish://payment?data={quote(payment['payload'], safe='')}"
 
         with urlopen(f"{self._base_url}/pay?bookingId={booking_id}") as resp:
             self.assertEqual(resp.status, 200)
             html = resp.read().decode("utf-8")
 
-        self.assertIn(expected_link, html)
         self.assertEqual(html.count('id="open-swish"'), 1)
-        self.assertEqual(html.count("window.location = swishDeepLink;"), 1)
+        self.assertEqual(html.count("window.location = swishAppUrl;"), 1)
+        self.assertIn('class="swish-open-btn" disabled', html)
+        self.assertIn("Swish-integration ej konfigurerad", html)
+        self.assertIn('src="/api/swish/qr?bookingId=', html)
         self.assertNotIn("swish://payment?payee=", html)
+        self.assertNotIn("swish://payment?data=", html)
         self.assertNotIn("&amount=", html)
         self.assertNotIn("&message=", html)
         self.assertIn('alt="Swish QR"', html)
         self.assertIn("Använd QR-koden nedan.", html)
+
+        with urlopen(f"{self._base_url}/api/swish/qr?bookingId={booking_id}") as qr_resp:
+            self.assertEqual(qr_resp.status, 200)
+            self.assertEqual(qr_resp.headers.get_content_type(), "image/svg+xml")
 
 
 if __name__ == "__main__":

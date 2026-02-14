@@ -54,7 +54,10 @@ Default local URL: `http://localhost:8000`
 Use `.env.example` as the source of truth.
 
 - `PORT`: HTTP listen port (default `8000`)
-- `SWISH_PAYEE`: Swish payee number used when creating payment payloads
+- `SWISH_COMMERCE_MERCHANT_ALIAS`: Swish Commerce merchant alias
+- `SWISH_COMMERCE_CERT_PATH`: path to Swish Commerce client certificate
+- `SWISH_COMMERCE_KEY_PATH`: path to Swish Commerce private key
+- `SWISH_COMMERCE_CALLBACK_URL`: optional explicit callback URL for Swish (`/api/swish/callback` is used by default)
 - `NOTIFY_WEBHOOK_URL`: optional webhook endpoint for booking notifications
 - `NOTIFY_WEBHOOK_SECRET`: optional HMAC secret for webhook signature header
 - `ADMIN_TOKEN`: admin auth token for `/admin` and `/api/admin/*`
@@ -77,7 +80,7 @@ Suggested settings:
 
 Environment variables in Render:
 - `PORT` is provided by Render
-- Set `SWISH_PAYEE` explicitly in Render dashboard
+- Set `SWISH_COMMERCE_MERCHANT_ALIAS`, `SWISH_COMMERCE_CERT_PATH`, `SWISH_COMMERCE_KEY_PATH` in Render dashboard when enabling Swish Commerce
 - Set `ADMIN_TOKEN` (required for production)
 - Set `ADMIN_SESSION_SECRET` (required for `/admin/login` session cookies)
 

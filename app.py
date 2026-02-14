@@ -65,6 +65,7 @@ from typing import Any, Dict, Optional
 
 import db
 import notifications
+from qrcodegen import QrCode
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -471,8 +472,8 @@ class Handler(BaseHTTPRequestHandler):
 
         * Expires outdated bookings before processing to keep
           availability accurate.
-        * Supports a new API endpoint ``/api/payment`` to generate a
-          Swish payment request for a booking.
+        * Supports payment endpoints for retrieving Swish payment details
+          and rendering QR content.
         * Serves dynamic payment and confirmation pages (``/pay`` and
           ``/confirm``).
         """
@@ -509,6 +510,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_availability(query_params)
         if path == "/api/payment":
             return self.handle_payment(query_params)
+        if path == "/api/swish/qr":
+            return self.handle_swish_qr(query_params)
         if path.startswith("/api/admin/"):
             if not self.require_admin_auth(html=False):
                 return
@@ -655,15 +658,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.end_json(200, {"available": available, "remaining": remaining})
 
     def handle_payment(self, params: Dict[str, str]) -> None:
-        """Initiate or retrieve a Swish payment request for a booking.
-
-        Expects a query parameter ``bookingId``.  If the booking is in
-        ``PENDING_PAYMENT`` state the function either returns existing
-        payment details or generates a new payment request (fake
-        implementation).  The response includes the Swish ID, price,
-        QR-code URL and payload string.  If the booking has already been
-        confirmed or cancelled an error is returned.
-        """
+        """Initiate or retrieve payment details for a booking."""
         booking_id_str = params.get("bookingId")
         if not booking_id_str:
             return self.end_json(400, {"error": "bookingId is required"})
@@ -680,6 +675,91 @@ class Handler(BaseHTTPRequestHandler):
         # Create payment details if needed
         details = self._get_or_create_payment_details(booking_id)
         return self.end_json(200, details)
+
+    def handle_swish_qr(self, params: Dict[str, str]) -> None:
+        """Serve SVG QR image for a payment request."""
+        booking_id_str = params.get("bookingId")
+        if not booking_id_str:
+            return self.end_json(400, {"error": "bookingId is required"})
+        try:
+            booking_id = int(booking_id_str)
+        except ValueError:
+            return self.end_json(400, {"error": "bookingId must be an integer"})
+        booking = db.get_booking_by_id(booking_id)
+        if not booking:
+            return self.end_json(404, {"error": "Booking not found"})
+        if booking.get("status") != "PENDING_PAYMENT":
+            return self.end_json(400, {"error": "Booking is not awaiting payment"})
+
+        details = self._get_or_create_payment_details(booking_id)
+        qr_payload = details.get("swishAppUrl")
+        if qr_payload:
+            svg = self._render_qr_svg(qr_payload, size=320)
+        else:
+            svg = self._render_notice_svg("Swish-integration ej konfigurerad")
+
+        body = svg.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _swish_callback_url(self) -> str:
+        configured = (os.environ.get("SWISH_COMMERCE_CALLBACK_URL") or "").strip()
+        if configured:
+            return configured
+        host = self.headers.get("Host") or "localhost:8000"
+        scheme = "https" if self._request_is_https() else "http"
+        return f"{scheme}://{host}/api/swish/callback"
+
+    def _swish_build_app_url(self, token: str) -> str:
+        callback_url = self._swish_callback_url()
+        token_enc = urllib.parse.quote(token, safe="")
+        callback_enc = urllib.parse.quote(callback_url, safe="")
+        return f"swish://paymentrequest?token={token_enc}&callbackurl={callback_enc}"
+
+    def _swish_is_configured(self) -> bool:
+        merchant_alias = (os.environ.get("SWISH_COMMERCE_MERCHANT_ALIAS") or "").strip()
+        cert_path = (os.environ.get("SWISH_COMMERCE_CERT_PATH") or "").strip()
+        key_path = (os.environ.get("SWISH_COMMERCE_KEY_PATH") or "").strip()
+        return bool(merchant_alias and cert_path and key_path)
+
+    def _render_notice_svg(self, text: str, size: int = 320) -> str:
+        escaped = html_lib.escape(text)
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" '
+            f'width="{size}" height="{size}" role="img" aria-label="{escaped}">'
+            '<rect width="100%" height="100%" fill="#ffffff"/>'
+            '<rect x="8" y="8" width="304" height="304" rx="14" fill="#fff8e1" stroke="#f0d19f"/>'
+            f'<text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" '
+            'font-size="16" fill="#8a4c00" font-family="Arial, sans-serif">'
+            f"{escaped}</text>"
+            "</svg>"
+        )
+
+    def _render_qr_svg(self, payload: str, size: int = 320, border: int = 2) -> str:
+        qr = QrCode.encode_text(payload, QrCode.Ecc.MEDIUM)
+        qr_size = qr.get_size()
+        scale = max(1, size // (qr_size + border * 2))
+        canvas = (qr_size + border * 2) * scale
+        rects = []
+        for y in range(qr_size):
+            for x in range(qr_size):
+                if qr.get_module(x, y):
+                    rects.append(
+                        f'<rect x="{(x + border) * scale}" y="{(y + border) * scale}" '
+                        f'width="{scale}" height="{scale}"/>'
+                    )
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {canvas} {canvas}" '
+            f'width="{size}" height="{size}" role="img" aria-label="Swish QR">'
+            '<rect width="100%" height="100%" fill="#fff"/>'
+            '<g fill="#000">'
+            + "".join(rects)
+            + "</g></svg>"
+        )
 
     def handle_admin_bookings(self, params: Dict[str, str]) -> None:
         """Return booking rows for admin tooling."""
@@ -940,14 +1020,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.end_json(400, {"error": "Booking is not awaiting payment"})
         details = self._get_or_create_payment_details(booking_id)
         price = details["price"]
-        qr_url = details["qrUrl"]
-        message = details["swishMessage"]
+        qr_image_url = details["qrImageUrl"]
         booking_reference = details.get("bookingReference")
-        swish_payload = details["payload"]
-        payee = os.environ.get("SWISH_PAYEE", "1234945580")
-        swish_deep_link = "swish://payment?data=" + urllib.parse.quote(swish_payload, safe="")
-
-        amount_param = f"{price:.2f}"
+        swish_app_url = details.get("swishAppUrl")
+        integration_message = details.get("integrationMessage")
+        integration_is_configured = bool(swish_app_url)
   
         # Compose payment page with polished styling; no booking/payment behavior changes.
         html = f"""
@@ -1029,6 +1106,15 @@ class Handler(BaseHTTPRequestHandler):
       display: grid;
       gap: 8px;
     }}
+    .swish-warning {{
+      margin-top: 10px;
+      color: #8a4c00;
+      background: #fff6e8;
+      border: 1px solid #f0d19f;
+      border-radius: 10px;
+      padding: 9px 10px;
+      font-weight: 600;
+    }}
     .swish-open-btn {{
       border: 0;
       border-radius: 12px;
@@ -1038,6 +1124,10 @@ class Handler(BaseHTTPRequestHandler):
       font-weight: 700;
       font-size: 1rem;
       cursor: pointer;
+    }}
+    .swish-open-btn:disabled {{
+      background: #8e9aa7;
+      cursor: not-allowed;
     }}
     .swish-open-btn:hover,
     .swish-open-btn:focus-visible {{
@@ -1088,21 +1178,22 @@ class Handler(BaseHTTPRequestHandler):
   <div class=\"progress\">Steg 4 av 5: Betalning</div>
   <div class=\"card\">
     <h2>Betala med Swish</h2>
-    <p>Scanna QR-koden i din Swish-app. Belopp och meddelande är förifyllda.</p>
+    <p>Scanna QR-koden i din Swish-app eller öppna betalningen direkt.</p>
     <div class=\"meta\">
       <p><strong>Belopp:</strong> {price} kr</p>
-      <p><strong>Mottagare:</strong> {html_lib.escape(payee)}</p>
-      <p><strong>Meddelande:</strong> {html_lib.escape(message)}</p>
       <p><strong>Bokningsreferens:</strong> {html_lib.escape(booking_reference or "saknas")}</p>
     </div>
+    {"<p class=\"swish-warning\">Swish-integration ej konfigurerad. "
+      + html_lib.escape(integration_message or "")
+      + "</p>" if not integration_is_configured else ""}
     <div class=\"swish-actions\">
-      <button id=\"open-swish\" type=\"button\" class=\"swish-open-btn\">Öppna i Swish</button>
+      <button id=\"open-swish\" type=\"button\" class=\"swish-open-btn\" {"disabled" if not integration_is_configured else ""}>Öppna i Swish</button>
       <p class=\"swish-help\" id=\"swish-help\">Öppna Swish på den här enheten för snabb betalning.</p>
       <p class=\"swish-fallback\" id=\"swish-fallback\">Använd QR-koden nedan.</p>
     </div>
     <p class=\"qr-alt\">Använd Swish på annan enhet</p>
     <div class=\"qr-wrap\">
-      <img src=\"{qr_url}\" alt=\"Swish QR\" width=\"320\" height=\"320\" />
+      <img src=\"{html_lib.escape(qr_image_url)}\" alt=\"Swish QR\" width=\"320\" height=\"320\" />
     </div>
   </div>
   <div class=\"card\">
@@ -1116,7 +1207,7 @@ class Handler(BaseHTTPRequestHandler):
   <p>Frågor eller problem? Ring <strong>070‑457 97 09</strong></p>
 </footer>
 <script>
-  const swishDeepLink = {json.dumps(swish_deep_link, ensure_ascii=False)};
+  const swishAppUrl = {json.dumps(swish_app_url, ensure_ascii=False)};
   const openBtn = document.getElementById("open-swish");
   const helpText = document.getElementById("swish-help");
   const fallbackText = document.getElementById("swish-fallback");
@@ -1137,12 +1228,12 @@ class Handler(BaseHTTPRequestHandler):
   }}
 
   openBtn.addEventListener("click", () => {{
-    if (!swishDeepLink) {{
+    if (!swishAppUrl) {{
       showFallbackInstruction();
       return;
     }}
     fallbackText.style.display = "none";
-    window.location = swishDeepLink;
+    window.location = swishAppUrl;
     setTimeout(() => {{
       if (document.visibilityState === "visible") {{
         showFallbackInstruction();
@@ -1338,33 +1429,45 @@ class Handler(BaseHTTPRequestHandler):
     def _get_or_create_payment_details(self, booking_id: int) -> Dict[str, Any]:
         """Return payment details for a booking, creating a request if needed.
 
-        This helper replicates the logic from ``handle_payment`` but
-        without writing to the HTTP response.  It reads the booking
-        record, generates a fake Swish ID if necessary, persists it via
-        ``db.set_swish_id`` and constructs a QR payload.
+        NOTE:
+        TODO: Replace the placeholder branch with real Swish Commerce API
+        request creation when cert/config management is finalized.
         """
-        booking = db.get_booking_by_id(booking_id) 
+        booking = db.get_booking_by_id(booking_id)
         amount = booking["price"]
         swish_id = booking.get("swish_id")
         if not swish_id:
             import uuid
-            swish_id = str(uuid.uuid4()).replace("-", "")  
+            swish_id = str(uuid.uuid4()).replace("-", "")
             db.set_swish_id(booking_id, swish_id)
-        payee = os.environ.get("SWISH_PAYEE", "1234945580")
-        amount_qr = f"{amount:.2f}".replace(".", ",")       
+
         booking_reference = booking.get("booking_reference")
-        message = booking_reference or f"DHS-{booking_id}"
-        # Build Swish QR payload (encode only once when putting into URL)
-        payload = f"C{payee};{amount_qr};{message};0"
-        qr_url = "https://quickchart.io/qr?size=320&text=" + urllib.parse.quote(payload, safe="")  
+        swish_token = None
+        integration_status = "NOT_CONFIGURED"
+        integration_message = (
+            "Sätt SWISH_COMMERCE_MERCHANT_ALIAS, SWISH_COMMERCE_CERT_PATH "
+            "och SWISH_COMMERCE_KEY_PATH för att aktivera token-baserad Swish Commerce."
+        )
+        if self._swish_is_configured():
+            integration_status = "NOT_IMPLEMENTED"
+            integration_message = (
+                "Swish Commerce API-anrop är ännu inte implementerade. "
+                "TODO: skapa payment request och hämta token."
+            )
+            # TODO: Call Swish Commerce API here and assign `swish_token`.
+
+        swish_app_url = self._swish_build_app_url(swish_token) if swish_token else None
+        qr_image_url = f"/api/swish/qr?bookingId={booking_id}"
         return {
             "bookingId": booking_id,
             "bookingReference": booking_reference,
             "price": amount,
             "swishId": swish_id,
-            "swishMessage": message,
-            "qrUrl": qr_url,
-            "payload": payload,
+            "swishToken": swish_token,
+            "swishAppUrl": swish_app_url,
+            "qrImageUrl": qr_image_url,
+            "integrationStatus": integration_status,
+            "integrationMessage": integration_message,
         }
 
     # ---- Static file serving ----
