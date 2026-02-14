@@ -947,9 +947,6 @@ class Handler(BaseHTTPRequestHandler):
         payee = os.environ.get("SWISH_PAYEE", "1234945580")
         amount_dot = f"{price:.2f}"
         deep_link_candidates = [
-            f"swish://payment?payee={urllib.parse.quote(payee, safe='')}"
-            f"&amount={urllib.parse.quote(amount_dot, safe='')}"
-            f"&message={urllib.parse.quote(message, safe='')}",
             f"swish://payment?data={urllib.parse.quote(payload, safe='')}",
         ]
         # Compose payment page with polished styling; no booking/payment behavior changes.
