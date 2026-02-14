@@ -44,6 +44,22 @@ from typing import Any, Optional, Tuple
 DB_PATH = Path(__file__).resolve().parent / "database.db"
 PENDING_PAYMENT_EXPIRATION_MINUTES = 15
 TRAILERS_PER_TYPE = 2
+def _ensure_swish_columns(conn):
+    cols = [
+        ("swish_instruction_uuid", "TEXT"),
+        ("swish_token", "TEXT"),
+        ("swish_request_id", "TEXT"),
+        ("swish_status", "TEXT"),
+        ("swish_created_at", "TEXT"),
+        ("swish_updated_at", "TEXT"),
+    ]
+    cur = conn.cursor()
+    for name, typ in cols:
+        try:
+            cur.execute(f"ALTER TABLE bookings ADD COLUMN {name} {typ}")
+        except Exception:
+            pass
+    conn.commit()
 
 
 def init_db() -> None:
@@ -56,27 +72,33 @@ def init_db() -> None:
     existing data intact.
     """
     conn = sqlite3.connect(DB_PATH)
+
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS bookings (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
             booking_reference TEXT UNIQUE,
-            trailer_type  TEXT NOT NULL CHECK (trailer_type IN ('GALLER','KAP')),
-            rental_type   TEXT NOT NULL CHECK (rental_type IN ('TWO_HOURS','FULL_DAY')),
-            start_dt      TEXT NOT NULL,
-            end_dt        TEXT NOT NULL,
-            price         INTEGER NOT NULL,
-            status        TEXT NOT NULL CHECK (status IN ('PENDING_PAYMENT','CONFIRMED','CANCELLED')),
-            created_at    TEXT NOT NULL
-            -- The following optional columns were added in Milestone C.
-            -- swish_id stores the payment reference returned from the Swish
-            -- Commerce API, and expires_at stores the expiry timestamp for
-            -- pending bookings (ISO format, naive local time).
-            , swish_id    TEXT
-            , expires_at  TEXT
+            trailer_type      TEXT NOT NULL,
+            rental_type       TEXT NOT NULL,
+            start_dt          TEXT NOT NULL,
+            end_dt            TEXT NOT NULL,
+            price             INTEGER NOT NULL,
+            status            TEXT NOT NULL,
+            created_at        TEXT NOT NULL,
+            swish_id          TEXT,
+            expires_at        TEXT,
+            swish_instruction_uuid TEXT,
+            swish_token       TEXT,
+            swish_request_id  TEXT,
+            swish_status      TEXT,
+            swish_created_at  TEXT,
+            swish_updated_at  TEXT
         );
         """
     )
+
+    _ensure_swish_columns(conn)
+
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS trailer_blocks (
