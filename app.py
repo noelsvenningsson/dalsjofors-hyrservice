@@ -527,6 +527,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "service": "dalsjofors-hyrservice",
+                    "commit": "8fdf328",
                     "time": datetime.now().isoformat(timespec="seconds"),
                 },
             )
