@@ -186,15 +186,7 @@ class BookingReferenceFlowTest(unittest.TestCase):
 
         payment_status, payment = self._get_json("/api/payment", {"bookingId": booking_id})
         self.assertEqual(payment_status, 200)
-        amount = f"{payment['price']:.2f}"
-        payee = os.environ.get("SWISH_PAYEE", "1234945580")
-        message = payment["swishMessage"]
-        expected_link = (
-            "swish://payment"
-            f"?payee={quote(payee, safe='')}"
-            f"&amount={quote(amount, safe='')}"
-            f"&message={quote(message, safe='')}"
-        )
+        expected_link = f"swish://payment?data={quote(payment['payload'], safe='')}"
 
         with urlopen(f"{self._base_url}/pay?bookingId={booking_id}") as resp:
             self.assertEqual(resp.status, 200)
@@ -202,8 +194,10 @@ class BookingReferenceFlowTest(unittest.TestCase):
 
         self.assertIn(expected_link, html)
         self.assertEqual(html.count('id="open-swish"'), 1)
-        self.assertEqual(html.count("window.location.href = swishDeepLink;"), 1)
-        self.assertNotIn("swish://payment?data=", html)
+        self.assertEqual(html.count("window.location = swishDeepLink;"), 1)
+        self.assertNotIn("swish://payment?payee=", html)
+        self.assertNotIn("&amount=", html)
+        self.assertNotIn("&message=", html)
         self.assertIn('alt="Swish QR"', html)
         self.assertIn("Använd QR-koden nedan.", html)
 
