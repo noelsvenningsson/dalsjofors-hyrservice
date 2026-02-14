@@ -945,10 +945,7 @@ class Handler(BaseHTTPRequestHandler):
         payload = details["payload"]
         booking_reference = details.get("bookingReference")
         payee = os.environ.get("SWISH_PAYEE", "1234945580")
-        amount_dot = f"{price:.2f}"
-        deep_link_candidates = [
-            f"swish://payment?data={urllib.parse.quote(payload, safe='')}",
-        ]
+        swish_deep_link = f"swish://payment?data={urllib.parse.quote(payload, safe='')}"
         # Compose payment page with polished styling; no booking/payment behavior changes.
         html = f"""
 <!doctype html><html lang=\"sv\"><head>
@@ -1116,7 +1113,7 @@ class Handler(BaseHTTPRequestHandler):
   <p>Frågor eller problem? Ring <strong>070‑457 97 09</strong></p>
 </footer>
 <script>
-  const swishLinks = {json.dumps(deep_link_candidates, ensure_ascii=False)};
+  const swishDeepLink = {json.dumps(swish_deep_link, ensure_ascii=False)};
   const openBtn = document.getElementById("open-swish");
   const helpText = document.getElementById("swish-help");
   const fallbackText = document.getElementById("swish-fallback");
@@ -1137,17 +1134,12 @@ class Handler(BaseHTTPRequestHandler):
   }}
 
   openBtn.addEventListener("click", () => {{
-    if (!swishLinks.length) {{
+    if (!swishDeepLink) {{
       showFallbackInstruction();
       return;
     }}
     fallbackText.style.display = "none";
-    window.location.href = swishLinks[0];
-    setTimeout(() => {{
-      if (document.visibilityState === "visible" && swishLinks[1]) {{
-        window.location.href = swishLinks[1];
-      }}
-    }}, 500);
+    window.location.href = swishDeepLink;
     setTimeout(() => {{
       if (document.visibilityState === "visible") {{
         showFallbackInstruction();

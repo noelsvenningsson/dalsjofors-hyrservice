@@ -8,7 +8,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 import app
@@ -179,6 +179,26 @@ class BookingReferenceFlowTest(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             html = resp.read().decode("utf-8")
         self.assertIn("Bokningsreferens: saknas", html)
+
+    def test_pay_page_uses_only_payload_swish_deep_link_and_keeps_qr(self) -> None:
+        hold = self._create_hold("2026-04-14")
+        booking_id = hold["bookingId"]
+
+        payment_status, payment = self._get_json("/api/payment", {"bookingId": booking_id})
+        self.assertEqual(payment_status, 200)
+        payload = payment["payload"]
+        expected_link = f"swish://payment?data={quote(payload, safe='')}"
+
+        with urlopen(f"{self._base_url}/pay?bookingId={booking_id}") as resp:
+            self.assertEqual(resp.status, 200)
+            html = resp.read().decode("utf-8")
+
+        self.assertIn(expected_link, html)
+        self.assertNotIn("swish://payment?payee=", html)
+        self.assertNotIn("swish://payment?amount=", html)
+        self.assertNotIn("swish://payment?message=", html)
+        self.assertIn('id="open-swish"', html)
+        self.assertIn('alt="Swish QR"', html)
 
 
 if __name__ == "__main__":
