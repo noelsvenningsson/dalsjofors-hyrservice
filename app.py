@@ -945,7 +945,16 @@ class Handler(BaseHTTPRequestHandler):
         booking_reference = details.get("bookingReference")
         swish_payload = details["payload"]
         payee = os.environ.get("SWISH_PAYEE", "1234945580")
-        swish_deep_link = f"swish://payment?data={urllib.parse.quote(swish_payload, safe='')}"
+        swish_deep_link = "swish://payment?data=" + urllib.parse.quote(swish_payload, safe="")
+
+        amount_param = f"{price:.2f}"
+        swish_payee_link = (
+            "swish://payment?"
+            f"payee={urllib.parse.quote(payee, safe='')}"
+            f"&amount={urllib.parse.quote(amount_param, safe='')}"
+            f"&message={urllib.parse.quote(message, safe='')}"
+        )
+  
         # Compose payment page with polished styling; no booking/payment behavior changes.
         html = f"""
 <!doctype html><html lang=\"sv\"><head>
@@ -1113,7 +1122,7 @@ class Handler(BaseHTTPRequestHandler):
   <p>Frågor eller problem? Ring <strong>070‑457 97 09</strong></p>
 </footer>
 <script>
-  const swishDeepLink = {json.dumps(swish_deep_link, ensure_ascii=False)};
+  const swishDeepLink = {json.dumps(swish_payee_link, ensure_ascii=False)};
   const openBtn = document.getElementById("open-swish");
   const helpText = document.getElementById("swish-help");
   const fallbackText = document.getElementById("swish-fallback");
