@@ -180,25 +180,32 @@ class BookingReferenceFlowTest(unittest.TestCase):
             html = resp.read().decode("utf-8")
         self.assertIn("Bokningsreferens: saknas", html)
 
-    def test_pay_page_uses_only_payload_swish_deep_link_and_keeps_qr(self) -> None:
+    def test_pay_page_has_single_swish_app_link_trigger_and_keeps_qr(self) -> None:
         hold = self._create_hold("2026-04-14")
         booking_id = hold["bookingId"]
 
         payment_status, payment = self._get_json("/api/payment", {"bookingId": booking_id})
         self.assertEqual(payment_status, 200)
-        payload = payment["payload"]
-        expected_link = f"swish://payment?data={quote(payload, safe='')}"
+        amount = f"{payment['price']:.2f}"
+        payee = os.environ.get("SWISH_PAYEE", "1234945580")
+        message = payment["swishMessage"]
+        expected_link = (
+            "swish://payment"
+            f"?payee={quote(payee, safe='')}"
+            f"&amount={quote(amount, safe='')}"
+            f"&message={quote(message, safe='')}"
+        )
 
         with urlopen(f"{self._base_url}/pay?bookingId={booking_id}") as resp:
             self.assertEqual(resp.status, 200)
             html = resp.read().decode("utf-8")
 
         self.assertIn(expected_link, html)
-        self.assertNotIn("swish://payment?payee=", html)
-        self.assertNotIn("swish://payment?amount=", html)
-        self.assertNotIn("swish://payment?message=", html)
-        self.assertIn('id="open-swish"', html)
+        self.assertEqual(html.count('id="open-swish"'), 1)
+        self.assertEqual(html.count("window.location.href = swishDeepLink;"), 1)
+        self.assertNotIn("swish://payment?data=", html)
         self.assertIn('alt="Swish QR"', html)
+        self.assertIn("Använd QR-koden nedan.", html)
 
 
 if __name__ == "__main__":
