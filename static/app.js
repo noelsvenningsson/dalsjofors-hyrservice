@@ -93,6 +93,27 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function isPaid(status) {
+    return status === 'PAID';
+  }
+
+  function readSwishStatus(data, sourceLabel) {
+    if (data && typeof data.swishStatus === 'string') {
+      return data.swishStatus;
+    }
+    console.warn(`[payment] Missing swishStatus from ${sourceLabel}. Defaulting to PENDING.`, data);
+    return 'PENDING';
+  }
+
+  function gotoConfirmation() {
+    if (!isPaid(state.swishStatus)) {
+      console.warn('[payment] Confirmation blocked because swishStatus is not PAID.', state.swishStatus);
+      return;
+    }
+    renderConfirmation();
+    showStep(5);
+  }
+
   function updatePriceInfo() {
     if (!state.rentalType) return;
     if (state.date) {
@@ -209,6 +230,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderConfirmation() {
     const trailerText = state.trailerType === 'GALLER' ? 'Gallersläp' : 'Kåpsläp';
+    const paymentText = isPaid(state.swishStatus) ? 'Registrerad' : 'Väntar på betalning';
     const rows = [];
     rows.push(`<p><strong>Boknings-ID:</strong> ${state.bookingId}</p>`);
     if (state.bookingReference) {
@@ -224,7 +246,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.price != null) {
       rows.push(`<p><strong>Pris:</strong> ${state.price} kr</p>`);
     }
-    rows.push('<p><strong>Betalning:</strong> Registrerad</p>');
+    rows.push(`<p><strong>Betalning:</strong> ${paymentText}</p>`);
     confirmationEl.innerHTML = rows.join('');
   }
 
@@ -297,7 +319,9 @@ document.addEventListener('DOMContentLoaded', () => {
           throw new Error(data?.errorInfo?.message || data?.error || 'Betalning kunde inte startas');
         }
 
-        state.swishStatus = data.status || 'PENDING';
+        const swishStatus = readSwishStatus(data, '/api/swish/paymentrequest');
+        state.swishStatus = swishStatus;
+        updateDebugInfo();
         if (data.qrUrl) {
           qrWrap.hidden = false;
           paymentQr.src = data.qrUrl;
@@ -310,15 +334,21 @@ document.addEventListener('DOMContentLoaded', () => {
           openSwishLink.removeAttribute('href');
         }
 
-        if (data.status === 'PAID') {
+        if (isPaid(swishStatus)) {
           setInfoState(paymentInfo, 'Betalning registrerad.', 'success');
           stopPaymentPolling();
-          renderConfirmation();
-          showStep(5);
+          gotoConfirmation();
           return;
         }
 
-        setInfoState(paymentInfo, data.idempotent ? 'Betalning väntar. Återanvänder befintlig förfrågan.' : 'Betalningsförfrågan skapad. Skanna QR eller öppna Swish.', 'success');
+        if (swishStatus === 'FAILED') {
+          stopPaymentPolling();
+          setInfoState(paymentInfo, 'Betalningen misslyckades. Försök igen.', 'error');
+          retryPayment.hidden = false;
+          return;
+        }
+
+        setInfoState(paymentInfo, data.idempotent ? 'Väntar på betalning... Återanvänder befintlig förfrågan.' : 'Väntar på betalning...', 'loading');
         startPaymentPolling();
       });
   }
@@ -331,20 +361,19 @@ document.addEventListener('DOMContentLoaded', () => {
         .then(res => res.json().then(data => ({ ok: res.ok, data })))
         .then(({ ok, data }) => {
           if (!ok) return;
-          const swishStatus = (data.swishStatus || 'PENDING').toUpperCase();
+          const swishStatus = readSwishStatus(data, '/api/payment-status');
           state.swishStatus = swishStatus;
           updateDebugInfo();
-          if (swishStatus === 'PAID') {
+          if (isPaid(swishStatus)) {
             stopPaymentPolling();
             setInfoState(paymentInfo, 'Betalning registrerad.', 'success');
-            renderConfirmation();
-            showStep(5);
+            gotoConfirmation();
           } else if (swishStatus === 'FAILED') {
             stopPaymentPolling();
             setInfoState(paymentInfo, 'Betalningen misslyckades. Försök igen.', 'error');
             retryPayment.hidden = false;
           } else {
-            setInfoState(paymentInfo, 'Väntar på betalning …', 'loading');
+            setInfoState(paymentInfo, 'Väntar på betalning...', 'loading');
           }
         })
         .catch(() => {
