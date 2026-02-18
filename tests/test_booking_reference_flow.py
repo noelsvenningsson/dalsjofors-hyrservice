@@ -270,6 +270,31 @@ class BookingReferenceFlowTest(unittest.TestCase):
             self.assertEqual(qr_resp.headers.get_content_type(), "image/svg+xml")
             self.assertIn("<svg", qr_resp.read().decode("utf-8"))
 
+    def test_payment_status_stays_pending_without_explicit_swish_confirmation(self) -> None:
+        hold = self._create_hold("2026-04-15")
+        booking_id = hold["bookingId"]
+
+        status, _ = self._post(f"/api/swish/paymentrequest?bookingId={booking_id}")
+        self.assertEqual(status, 200)
+
+        conn = sqlite3.connect(db.DB_PATH)
+        try:
+            conn.execute(
+                "UPDATE bookings SET swish_created_at = ? WHERE id = ?",
+                ((datetime.now() - timedelta(seconds=20)).isoformat(timespec="seconds"), booking_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        payment_status, payload = self._get_json("/api/payment-status", {"bookingId": booking_id})
+        self.assertEqual(payment_status, 200)
+        self.assertEqual(payload.get("swishStatus"), "PENDING")
+
+        booking = db.get_booking_by_id(booking_id)
+        self.assertIsNotNone(booking)
+        self.assertEqual(booking.get("status"), "PENDING_PAYMENT")
+
 
 if __name__ == "__main__":
     unittest.main()

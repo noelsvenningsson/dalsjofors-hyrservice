@@ -929,21 +929,8 @@ class Handler(BaseHTTPRequestHandler):
         swish_status = self._normalize_swish_status(booking.get("swish_status"))
         if (booking.get("status") or "").upper() in {"PAID", "CONFIRMED"}:
             swish_status = "PAID"
-        if self._swish_mode() == "mock" and swish_status == "PENDING" and booking.get("swish_request_id"):
-            created_at_raw = booking.get("swish_created_at")
-            if created_at_raw:
-                try:
-                    created_at = datetime.fromisoformat(created_at_raw)
-                    if datetime.now() - created_at >= timedelta(seconds=15):
-                        db.set_swish_status(
-                            booking_id,
-                            "PAID",
-                            booking_status="CONFIRMED",
-                            updated_at=datetime.now().isoformat(timespec="seconds"),
-                        )
-                        swish_status = "PAID"
-                except ValueError:
-                    pass
+        # Never auto-confirm in mock mode. Booking should stay pending until
+        # an explicit status update arrives (e.g. callback or dev mark endpoint).
 
         if swish_status == "PAID" and (booking.get("status") or "").upper() != "CONFIRMED":
             db.set_swish_status(
