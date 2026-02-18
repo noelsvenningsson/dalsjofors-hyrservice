@@ -97,6 +97,10 @@ document.addEventListener('DOMContentLoaded', () => {
     return status === 'PAID';
   }
 
+  function isFailed(status) {
+    return status === 'FAILED';
+  }
+
   function readSwishStatus(data, sourceLabel) {
     if (data && typeof data.swishStatus === 'string') {
       return data.swishStatus;
@@ -230,7 +234,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderConfirmation() {
     const trailerText = state.trailerType === 'GALLER' ? 'Gallersläp' : 'Kåpsläp';
-    const paymentText = isPaid(state.swishStatus) ? 'Registrerad' : 'Väntar på betalning';
     const rows = [];
     rows.push(`<p><strong>Boknings-ID:</strong> ${state.bookingId}</p>`);
     if (state.bookingReference) {
@@ -246,7 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.price != null) {
       rows.push(`<p><strong>Pris:</strong> ${state.price} kr</p>`);
     }
-    rows.push(`<p><strong>Betalning:</strong> ${paymentText}</p>`);
+    rows.push('<p><strong>Betalning:</strong> Registrerad</p>');
     confirmationEl.innerHTML = rows.join('');
   }
 
@@ -334,6 +337,7 @@ document.addEventListener('DOMContentLoaded', () => {
           openSwishLink.removeAttribute('href');
         }
 
+        // Confirmation must only depend on swishStatus (never on generic data.status).
         if (isPaid(swishStatus)) {
           setInfoState(paymentInfo, 'Betalning registrerad.', 'success');
           stopPaymentPolling();
@@ -341,7 +345,7 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
-        if (swishStatus === 'FAILED') {
+        if (isFailed(swishStatus)) {
           stopPaymentPolling();
           setInfoState(paymentInfo, 'Betalningen misslyckades. Försök igen.', 'error');
           retryPayment.hidden = false;
@@ -368,7 +372,7 @@ document.addEventListener('DOMContentLoaded', () => {
             stopPaymentPolling();
             setInfoState(paymentInfo, 'Betalning registrerad.', 'success');
             gotoConfirmation();
-          } else if (swishStatus === 'FAILED') {
+          } else if (isFailed(swishStatus)) {
             stopPaymentPolling();
             setInfoState(paymentInfo, 'Betalningen misslyckades. Försök igen.', 'error');
             retryPayment.hidden = false;
