@@ -4,3 +4,4 @@ __pycache__/
 
 # local dev db
 database.db
+database.db
