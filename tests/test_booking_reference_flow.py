@@ -57,6 +57,15 @@ class BookingReferenceFlowTest(unittest.TestCase):
             body = err.read().decode("utf-8")
             return err.code, json.loads(body)
 
+    def _post(self, path: str) -> tuple[int, dict]:
+        request = Request(f"{self._base_url}{path}", data=b"", method="POST")
+        try:
+            with urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except HTTPError as err:
+            body = err.read().decode("utf-8")
+            return err.code, json.loads(body)
+
     def _get_json(self, path: str, params: dict | None = None) -> tuple[int, dict]:
         url = f"{self._base_url}{path}"
         if params:
@@ -209,6 +218,57 @@ class BookingReferenceFlowTest(unittest.TestCase):
         with urlopen(f"{self._base_url}/api/swish/qr?bookingId={booking_id}") as qr_resp:
             self.assertEqual(qr_resp.status, 200)
             self.assertEqual(qr_resp.headers.get_content_type(), "image/svg+xml")
+
+    def test_swish_paymentrequest_creates_token_for_future_pending_booking(self) -> None:
+        start = datetime.now() + timedelta(days=2)
+        start = start.replace(hour=8, minute=0, second=0, microsecond=0)
+        end = start + timedelta(hours=2)
+
+        conn = sqlite3.connect(db.DB_PATH)
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO bookings (
+                    booking_reference,
+                    trailer_type,
+                    rental_type,
+                    start_dt,
+                    end_dt,
+                    price,
+                    status,
+                    created_at,
+                    swish_id,
+                    expires_at
+                )
+                VALUES (NULL, 'GALLER', 'TWO_HOURS', ?, ?, 200, 'PENDING_PAYMENT', ?, NULL, ?)
+                """,
+                (
+                    start.isoformat(timespec="minutes"),
+                    end.isoformat(timespec="minutes"),
+                    datetime.now().isoformat(timespec="seconds"),
+                    (datetime.now() - timedelta(minutes=30)).isoformat(timespec="seconds"),
+                ),
+            )
+            booking_id = cur.lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, payload = self._post(f"/api/swish/paymentrequest?bookingId={booking_id}")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("swishToken"))
+        self.assertTrue(payload.get("swishRequestId"))
+
+        booking = db.get_booking_by_id(booking_id)
+        self.assertIsNotNone(booking)
+        self.assertEqual(booking.get("status"), "PENDING_PAYMENT")
+        self.assertTrue(booking.get("swish_token"))
+        self.assertTrue(booking.get("swish_request_id"))
+
+        with urlopen(f"{self._base_url}/api/swish/qr?bookingId={booking_id}") as qr_resp:
+            self.assertEqual(qr_resp.status, 200)
+            self.assertEqual(qr_resp.headers.get_content_type(), "image/svg+xml")
+            self.assertIn("<svg", qr_resp.read().decode("utf-8"))
 
 
 if __name__ == "__main__":

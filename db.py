@@ -37,6 +37,8 @@ inventory or pricing) this module should be adapted accordingly.
 from __future__ import annotations
 
 import sqlite3
+import os
+import logging
 from datetime import datetime, date, time, timedelta
 from pathlib import Path
 from typing import Any, Optional, Tuple
@@ -44,6 +46,21 @@ from typing import Any, Optional, Tuple
 DB_PATH = Path(__file__).resolve().parent / "database.db"
 PENDING_PAYMENT_EXPIRATION_MINUTES = 15
 TRAILERS_PER_TYPE = 2
+SWISH_PENDING_STATUSES = {"PENDING", "CREATED"}
+SWISH_FAILED_STATUSES = {"FAILED", "CANCELLED", "ERROR", "EXPIRED"}
+logger = logging.getLogger(__name__)
+
+
+def _debug_swish_enabled() -> bool:
+    return (os.environ.get("DEBUG_SWISH") or "").strip() == "1"
+
+
+def _debug_swish_log(event: str, **fields: Any) -> None:
+    if not _debug_swish_enabled():
+        return
+    logger.warning("SWISH_DEBUG %s %s", event, fields)
+
+
 def _ensure_swish_columns(conn):
     cols = [
         ("swish_instruction_uuid", "TEXT"),
@@ -592,20 +609,56 @@ def expire_outdated_bookings(now: Optional[datetime] = None) -> int:
     """
     if now is None:
         now = datetime.now()
-    current_iso = now.isoformat(timespec="seconds")
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     try:
-        cur = conn.execute(
+        rows = conn.execute(
             """
+            SELECT id, status, start_dt, end_dt, expires_at
+            FROM bookings
+            WHERE status = 'PENDING_PAYMENT'
+              AND expires_at IS NOT NULL
+            """
+        ).fetchall()
+        cancel_ids: list[int] = []
+        for row in rows:
+            row_id = int(row["id"])
+            expires_at_raw = row["expires_at"]
+            start_dt_raw = row["start_dt"]
+            if not expires_at_raw or not start_dt_raw:
+                continue
+            try:
+                expires_at_dt = datetime.fromisoformat(expires_at_raw)
+                start_dt = datetime.fromisoformat(start_dt_raw)
+            except ValueError:
+                # Skip malformed rows defensively to avoid accidental cancellation.
+                continue
+            if expires_at_dt >= now:
+                continue
+            # Future bookings should remain payable even if a stale expires_at value exists.
+            if start_dt > now:
+                continue
+            cancel_ids.append(row_id)
+        if not cancel_ids:
+            _debug_swish_log("expire_outdated_bookings.noop", now=now.isoformat(timespec="seconds"))
+            return 0
+        placeholders = ",".join("?" for _ in cancel_ids)
+        cur = conn.execute(
+            f"""
             UPDATE bookings
             SET status = 'CANCELLED'
             WHERE status = 'PENDING_PAYMENT'
-              AND expires_at IS NOT NULL
-              AND expires_at < ?
+              AND id IN ({placeholders})
             """,
-            (current_iso,),
+            tuple(cancel_ids),
         )
         conn.commit()
+        _debug_swish_log(
+            "expire_outdated_bookings.updated",
+            now=now.isoformat(timespec="seconds"),
+            cancelled_count=cur.rowcount,
+            cancelled_ids=cancel_ids,
+        )
         return cur.rowcount
     finally:
         conn.close()
@@ -649,6 +702,82 @@ def set_swish_id(booking_id: int, swish_id: str) -> None:
             """,
             (swish_id, booking_id),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_swish_payment_request(
+    booking_id: int,
+    *,
+    instruction_uuid: str,
+    token: str,
+    request_id: str,
+    status: str,
+    created_at: str,
+    updated_at: str,
+) -> None:
+    """Persist or replace Swish payment request fields for a booking."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """
+            UPDATE bookings
+            SET swish_instruction_uuid = ?,
+                swish_token = ?,
+                swish_request_id = ?,
+                swish_status = ?,
+                swish_created_at = ?,
+                swish_updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                instruction_uuid,
+                token,
+                request_id,
+                status,
+                created_at,
+                updated_at,
+                booking_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_swish_status(
+    booking_id: int,
+    swish_status: str,
+    *,
+    booking_status: Optional[str] = None,
+    updated_at: Optional[str] = None,
+) -> None:
+    """Update Swish status and optionally booking status."""
+    effective_updated_at = updated_at or datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        if booking_status:
+            conn.execute(
+                """
+                UPDATE bookings
+                SET swish_status = ?,
+                    swish_updated_at = ?,
+                    status = ?
+                WHERE id = ?
+                """,
+                (swish_status, effective_updated_at, booking_status, booking_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE bookings
+                SET swish_status = ?,
+                    swish_updated_at = ?
+                WHERE id = ?
+                """,
+                (swish_status, effective_updated_at, booking_id),
+            )
         conn.commit()
     finally:
         conn.close()

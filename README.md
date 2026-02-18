@@ -54,6 +54,7 @@ Default local URL: `http://localhost:8000`
 Use `.env.example` as the source of truth.
 
 - `PORT`: HTTP listen port (default `8000`)
+- `SWISH_MODE`: `mock` (default) eller `live` (callback-stubben returnerar 501 i live tills cert-verifiering är implementerad)
 - `SWISH_COMMERCE_MERCHANT_ALIAS`: Swish Commerce merchant alias
 - `SWISH_COMMERCE_CERT_PATH`: path to Swish Commerce client certificate
 - `SWISH_COMMERCE_KEY_PATH`: path to Swish Commerce private key
@@ -202,6 +203,51 @@ Common errors:
 - `400 {"error":"trailerType, rentalType and date are required"}`
 - `409 {"error":"slot taken"}`
 - `409 {"error":"slot blocked","message":"Requested slot overlaps an admin block","block":{...}}`
+
+## Swish Mock Smoke Tests
+
+All commands assume local server at `http://localhost:8000` and `SWISH_MODE=mock`.
+
+Create a hold:
+
+```bash
+BOOKING_ID=$(curl -sS -X POST http://localhost:8000/api/hold \\
+  -H 'Content-Type: application/json' \\
+  -d '{"trailerType":"GALLER","rentalType":"TWO_HOURS","date":"2026-02-20","startTime":"10:00"}' | jq -r '.bookingId')
+echo "$BOOKING_ID"
+```
+
+Create or reuse payment request (idempotent):
+
+```bash
+curl -sS -X POST \"http://localhost:8000/api/swish/paymentrequest?bookingId=${BOOKING_ID}\" | jq
+curl -sS -X POST \"http://localhost:8000/api/swish/paymentrequest?bookingId=${BOOKING_ID}\" | jq
+```
+
+Debug existing booking row (example with `bookingId=4`) without enabling noisy logs globally:
+
+```bash
+DEBUG_SWISH=1 curl -sS -X POST "http://localhost:8000/api/swish/paymentrequest?bookingId=4" | jq
+```
+
+Fetch payment status:
+
+```bash
+curl -sS \"http://localhost:8000/api/payment-status?bookingId=${BOOKING_ID}\" | jq
+```
+
+Mark as paid in mock and verify poll endpoint response:
+
+```bash
+curl -sS -X POST \"http://localhost:8000/api/dev/swish/mark?bookingId=${BOOKING_ID}&status=PAID\" | jq
+curl -sS \"http://localhost:8000/api/payment-status?bookingId=${BOOKING_ID}\" | jq
+```
+
+QR endpoint should return SVG image when token exists:
+
+```bash
+curl -sS -I \"http://localhost:8000/api/swish/qr?bookingId=${BOOKING_ID}\"
+```
 
 ### `POST /api/admin/blocks`
 

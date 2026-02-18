@@ -298,6 +298,74 @@ input[type="date"]:focus-visible,
   border-color: #b3c4d3;
 }
 
+.payment-panel {
+  margin-top: 0.9rem;
+  padding: 0.9rem;
+  border: 1px solid #d9e3ec;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.payment-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.8rem;
+}
+
+.open-swish-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0.5rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: var(--success);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.open-swish-link:hover {
+  background: #0e653a;
+}
+
+#retry-payment {
+  min-height: 42px;
+  padding: 0.5rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid #b3c4d3;
+  background: #fff;
+  color: #28425a;
+  font-weight: 700;
+}
+
+#retry-payment:hover {
+  background: #f5f9fc;
+}
+
+.qr-wrap {
+  margin-top: 0.8rem;
+  display: flex;
+  justify-content: center;
+}
+
+.qr-wrap img {
+  max-width: min(320px, 100%);
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid #dbe5ee;
+  background: #fff;
+  padding: 8px;
+}
+
+.lock-code {
+  margin: 1rem 0 0;
+  font-size: 1.05rem;
+  color: #213243;
+}
+
 #step2-back:hover:not(:disabled),
 #step3-back:hover:not(:disabled),
 #step4-back:hover:not(:disabled) {

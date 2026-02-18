@@ -18,7 +18,13 @@ class SwishClient:
     def __init__(self, cfg: SwishConfig):
         self.cfg = cfg
 
-    def create_payment_request(self, amount_sek: int, message: str, payer_alias: Optional[str] = None) -> Dict[str, Any]:
+    def create_payment_request(
+        self,
+        amount_sek: int,
+        message: str,
+        callback_url_placeholder: Optional[str] = None,
+        payer_alias: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Returns dict with:
           instruction_uuid, token, request_id, swish_app_url
@@ -28,7 +34,8 @@ class SwishClient:
         token = str(uuid.uuid4()).replace("-", "")
         request_id = instruction_uuid
 
-        swish_app_url = f"swish://paymentrequest?token={token}&callbackurl={self.cfg.callback_url}"
+        callback_url = callback_url_placeholder or self.cfg.callback_url
+        swish_app_url = f"swish://paymentrequest?token={token}&callbackurl={callback_url}"
 
         return {
             "instruction_uuid": instruction_uuid,
@@ -49,4 +56,3 @@ class SwishClient:
         """
         # Placeholder: frontend kan använda befintlig QR-route.
         return f"<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><text x='10' y='100'>token:{token}</text></svg>"
-

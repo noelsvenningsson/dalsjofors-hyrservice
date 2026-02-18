@@ -52,6 +52,7 @@ import logging
 import os
 import re
 import urllib.parse
+import sqlite3
 import hmac
 import hashlib
 import html as html_lib
@@ -66,6 +67,7 @@ from typing import Any, Dict, Optional
 import db
 import notifications
 from qrcodegen import QrCode
+from swish_client import SwishClient, SwishConfig
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -77,6 +79,20 @@ NOTIFIER = notifications.create_notification_service_from_env()
 _ADMIN_TOKEN_WARNING_EMITTED = False
 ADMIN_SESSION_COOKIE_NAME = "admin_session"
 ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
+
+
+def _debug_swish_enabled() -> bool:
+    return (os.environ.get("DEBUG_SWISH") or "").strip() == "1"
+
+
+def _debug_swish_log(event: str, **fields: Any) -> None:
+    if not _debug_swish_enabled():
+        return
+    logger.warning(
+        "SWISH_DEBUG %s %s",
+        event,
+        json.dumps(fields, ensure_ascii=False, default=str),
+    )
 
 
 def is_production_environment() -> bool:
@@ -510,6 +526,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_availability(query_params)
         if path == "/api/payment":
             return self.handle_payment(query_params)
+        if path == "/api/payment-status":
+            return self.handle_payment_status(query_params)
         if path == "/api/swish/qr":
             return self.handle_swish_qr(query_params)
         if path.startswith("/api/admin/"):
@@ -540,6 +558,16 @@ class Handler(BaseHTTPRequestHandler):
 
         return self.end_json(404, {"error": "Not Found"})
 
+    def do_HEAD(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query_params = parse_query(parsed.query)
+        if path == "/api/swish/qr":
+            return self.handle_swish_qr(query_params, head_only=True)
+        self.send_response(404)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def do_POST(self) -> None:
         """Handle HTTP POST requests.
 
@@ -550,15 +578,76 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        # Expire outdated bookings on each POST
-        try:
-            db.expire_outdated_bookings()
-        except Exception:
-            pass
+        debug_booking_id: Optional[int] = None
+        if _debug_swish_enabled() and path == "/api/swish/paymentrequest":
+            parsed_params = parse_query(parsed.query)
+            booking_id_str = parsed_params.get("bookingId")
+            if booking_id_str and booking_id_str.isdigit():
+                debug_booking_id = int(booking_id_str)
+                conn = sqlite3.connect(db.DB_PATH)
+                conn.row_factory = sqlite3.Row
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT id, status, start_dt, end_dt, expires_at, swish_status
+                        FROM bookings
+                        WHERE id = ?
+                        """,
+                        (debug_booking_id,),
+                    ).fetchone()
+                    _debug_swish_log(
+                        "do_post.paymentrequest.pre_expire",
+                        db_path=str(db.DB_PATH),
+                        booking_id=debug_booking_id,
+                        raw_row=(dict(row) if row else None),
+                    )
+                finally:
+                    conn.close()
+
+        # Expire outdated bookings on each POST except paymentrequest.
+        # paymentrequest should not mutate payable bookings before validation.
+        if path != "/api/swish/paymentrequest":
+            try:
+                expired_count = db.expire_outdated_bookings()
+                if _debug_swish_enabled():
+                    _debug_swish_log(
+                        "do_post.expire_outdated_bookings",
+                        path=path,
+                        expired_count=expired_count,
+                    )
+            except Exception as exc:
+                if _debug_swish_enabled():
+                    _debug_swish_log("do_post.expire_outdated_bookings.error", path=path, error=str(exc))
+        elif _debug_swish_enabled():
+            _debug_swish_log("do_post.expire_outdated_bookings.skipped", path=path)
+            if debug_booking_id is not None:
+                conn = sqlite3.connect(db.DB_PATH)
+                conn.row_factory = sqlite3.Row
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT id, status, start_dt, end_dt, expires_at, swish_status
+                        FROM bookings
+                        WHERE id = ?
+                        """,
+                        (debug_booking_id,),
+                    ).fetchone()
+                    _debug_swish_log(
+                        "do_post.paymentrequest.post_expire_skip",
+                        db_path=str(db.DB_PATH),
+                        booking_id=debug_booking_id,
+                        raw_row=(dict(row) if row else None),
+                    )
+                finally:
+                    conn.close()
 
         # Create a booking hold
         if path == "/api/hold":
             return self.handle_hold()
+        if path == "/api/swish/paymentrequest":
+            return self.handle_swish_payment_request(parsed.query)
+        if path == "/api/dev/swish/mark":
+            return self.handle_dev_swish_mark(parsed.query)
 
         # Handle Swish Commerce callback
         if path == "/api/swish/callback":
@@ -658,54 +747,18 @@ class Handler(BaseHTTPRequestHandler):
         available = remaining > 0
         return self.end_json(200, {"available": available, "remaining": remaining})
 
-    def handle_payment(self, params: Dict[str, str]) -> None:
-        """Initiate or retrieve payment details for a booking."""
-        booking_id_str = params.get("bookingId")
-        if not booking_id_str:
-            return self.end_json(400, {"error": "bookingId is required"})
-        try:
-            booking_id = int(booking_id_str)
-        except ValueError:
-            return self.end_json(400, {"error": "bookingId must be an integer"})
-        booking = db.get_booking_by_id(booking_id)
-        if not booking:
-            return self.end_json(404, {"error": "Booking not found"})
-        status = booking.get("status")
-        if status != "PENDING_PAYMENT":
-            return self.end_json(400, {"error": "Booking is not awaiting payment"})
-        # Create payment details if needed
-        details = self._get_or_create_payment_details(booking_id)
-        return self.end_json(200, details)
+    def _swish_mode(self) -> str:
+        return (os.environ.get("SWISH_MODE") or "mock").strip().lower()
 
-    def handle_swish_qr(self, params: Dict[str, str]) -> None:
-        """Serve SVG QR image for a payment request."""
-        booking_id_str = params.get("bookingId")
-        if not booking_id_str:
-            return self.end_json(400, {"error": "bookingId is required"})
-        try:
-            booking_id = int(booking_id_str)
-        except ValueError:
-            return self.end_json(400, {"error": "bookingId must be an integer"})
-        booking = db.get_booking_by_id(booking_id)
-        if not booking:
-            return self.end_json(404, {"error": "Booking not found"})
-        if booking.get("status") != "PENDING_PAYMENT":
-            return self.end_json(400, {"error": "Booking is not awaiting payment"})
-
-        details = self._get_or_create_payment_details(booking_id)
-        qr_payload = details.get("swishAppUrl")
-        if qr_payload:
-            svg = self._render_qr_svg(qr_payload, size=320)
-        else:
-            svg = self._render_notice_svg("Swish-integration ej konfigurerad")
-
-        body = svg.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+    def _swish_client(self) -> SwishClient:
+        return SwishClient(
+            SwishConfig(
+                base_url=(os.environ.get("SWISH_COMMERCE_BASE_URL") or "mock"),
+                merchant_alias=(os.environ.get("SWISH_COMMERCE_MERCHANT_ALIAS") or "1234945580"),
+                callback_url=self._swish_callback_url(),
+                mock=self._swish_mode() == "mock",
+            )
+        )
 
     def _swish_callback_url(self) -> str:
         configured = (os.environ.get("SWISH_COMMERCE_CALLBACK_URL") or "").strip()
@@ -721,11 +774,243 @@ class Handler(BaseHTTPRequestHandler):
         callback_enc = urllib.parse.quote(callback_url, safe="")
         return f"swish://paymentrequest?token={token_enc}&callbackurl={callback_enc}"
 
-    def _swish_is_configured(self) -> bool:
-        merchant_alias = (os.environ.get("SWISH_COMMERCE_MERCHANT_ALIAS") or "").strip()
-        cert_path = (os.environ.get("SWISH_COMMERCE_CERT_PATH") or "").strip()
-        key_path = (os.environ.get("SWISH_COMMERCE_KEY_PATH") or "").strip()
-        return bool(merchant_alias and cert_path and key_path)
+    def _is_payable_booking_status(self, booking_status: str) -> bool:
+        return booking_status in {"PENDING_PAYMENT", "HOLD"}
+
+    def _normalize_swish_status(self, swish_status_raw: Optional[str]) -> str:
+        swish_status = (swish_status_raw or "").upper()
+        if swish_status == "PAID":
+            return "PAID"
+        if swish_status in db.SWISH_FAILED_STATUSES:
+            return "FAILED"
+        return "PENDING"
+
+    def _payment_request_payload(self, booking_id: int, booking: Dict[str, Any], *, idempotent: bool) -> Dict[str, Any]:
+        token = booking.get("swish_token")
+        swish_status = self._normalize_swish_status(booking.get("swish_status"))
+        if (booking.get("status") or "").upper() in {"PAID", "CONFIRMED"}:
+            swish_status = "PAID"
+        swish_app_url = self._swish_build_app_url(token) if token else None
+        return {
+            "bookingId": booking_id,
+            "swishRequestId": booking.get("swish_request_id"),
+            "swishToken": token,
+            "swishAppUrl": swish_app_url,
+            "qrUrl": f"/api/swish/qr?bookingId={booking_id}",
+            "status": swish_status,
+            "idempotent": idempotent,
+        }
+
+    def handle_payment(self, params: Dict[str, str]) -> None:
+        """Legacy payment endpoint kept for backward compatibility."""
+        booking_id_str = params.get("bookingId")
+        if not booking_id_str:
+            return self.api_error(400, "invalid_request", "bookingId is required", legacy_error="bookingId is required")
+        try:
+            booking_id = int(booking_id_str)
+        except ValueError:
+            return self.api_error(400, "invalid_request", "bookingId must be an integer", legacy_error="bookingId must be an integer")
+        booking = db.get_booking_by_id(booking_id)
+        if not booking:
+            return self.api_error(404, "not_found", "Booking not found", legacy_error="Booking not found")
+        return self.end_json(
+            200,
+            {
+                "bookingId": booking_id,
+                "bookingReference": booking.get("booking_reference"),
+                "price": booking.get("price"),
+                "swishId": booking.get("swish_id"),
+                "swishToken": None,
+                "swishAppUrl": None,
+                "qrImageUrl": f"/api/swish/qr?bookingId={booking_id}",
+                "integrationStatus": "NOT_CONFIGURED",
+                "integrationMessage": "Use /api/swish/paymentrequest for mock payment flow.",
+            },
+        )
+
+    def handle_swish_payment_request(self, raw_query: str) -> None:
+        params = parse_query(raw_query)
+        booking_id_str = params.get("bookingId")
+        if not booking_id_str:
+            return self.api_error(400, "invalid_request", "bookingId is required", legacy_error="bookingId is required")
+        try:
+            booking_id = int(booking_id_str)
+        except ValueError:
+            return self.api_error(400, "invalid_request", "bookingId must be an integer", legacy_error="bookingId must be an integer")
+
+        if _debug_swish_enabled():
+            conn = sqlite3.connect(db.DB_PATH)
+            conn.row_factory = sqlite3.Row
+            try:
+                raw_row = conn.execute(
+                    """
+                    SELECT id, status, start_dt, end_dt, expires_at, swish_status, swish_token, swish_request_id
+                    FROM bookings
+                    WHERE id = ?
+                    """,
+                    (booking_id,),
+                ).fetchone()
+                _debug_swish_log(
+                    "paymentrequest.raw_booking_row",
+                    db_path=str(db.DB_PATH),
+                    booking_id=booking_id,
+                    raw_row=(dict(raw_row) if raw_row else None),
+                )
+            finally:
+                conn.close()
+
+        booking = db.get_booking_by_id(booking_id)
+        if not booking:
+            return self.api_error(404, "not_found", "Booking not found", legacy_error="Booking not found")
+
+        booking_status = (booking.get("status") or "").upper()
+        if booking_status in {"PAID", "CONFIRMED"}:
+            booking = dict(booking)
+            booking["swish_status"] = "PAID"
+            return self.end_json(200, self._payment_request_payload(booking_id, booking, idempotent=True))
+        if not self._is_payable_booking_status(booking_status):
+            if _debug_swish_enabled():
+                _debug_swish_log(
+                    "paymentrequest.not_payable",
+                    db_path=str(db.DB_PATH),
+                    booking_id=booking_id,
+                    booking=booking,
+                    booking_status=booking_status,
+                )
+            return self.api_error(
+                409,
+                "invalid_booking_status",
+                "Booking is not payable",
+                legacy_error="Booking is not payable",
+                details={"status": booking_status},
+            )
+
+        swish_status = (booking.get("swish_status") or "").upper()
+        if booking.get("swish_request_id") and swish_status in db.SWISH_PENDING_STATUSES:
+            return self.end_json(200, self._payment_request_payload(booking_id, booking, idempotent=True))
+
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        amount = int(booking.get("price") or 0)
+        booking_ref = booking.get("booking_reference") or f"BOOKING-{booking_id}"
+        message = f"DHS {booking_ref}"
+
+        try:
+            created = self._swish_client().create_payment_request(amount, message, self._swish_callback_url())
+        except Exception as exc:
+            return self.api_error(500, "internal_error", "Could not create payment request", legacy_error=str(exc))
+
+        db.set_swish_payment_request(
+            booking_id,
+            instruction_uuid=created["instruction_uuid"],
+            token=created["token"],
+            request_id=created["request_id"],
+            status="PENDING",
+            created_at=now_iso,
+            updated_at=now_iso,
+        )
+        refreshed = db.get_booking_by_id(booking_id)
+        if not refreshed:
+            return self.api_error(500, "internal_error", "Booking disappeared after update", legacy_error="Booking disappeared after update")
+        return self.end_json(200, self._payment_request_payload(booking_id, refreshed, idempotent=False))
+
+    def handle_payment_status(self, params: Dict[str, str]) -> None:
+        booking_id_str = params.get("bookingId")
+        if not booking_id_str:
+            return self.api_error(400, "invalid_request", "bookingId is required", legacy_error="bookingId is required")
+        try:
+            booking_id = int(booking_id_str)
+        except ValueError:
+            return self.api_error(400, "invalid_request", "bookingId must be an integer", legacy_error="bookingId must be an integer")
+
+        booking = db.get_booking_by_id(booking_id)
+        if not booking:
+            return self.api_error(404, "not_found", "Booking not found", legacy_error="Booking not found")
+
+        swish_status = self._normalize_swish_status(booking.get("swish_status"))
+        if (booking.get("status") or "").upper() in {"PAID", "CONFIRMED"}:
+            swish_status = "PAID"
+        if self._swish_mode() == "mock" and swish_status == "PENDING" and booking.get("swish_request_id"):
+            created_at_raw = booking.get("swish_created_at")
+            if created_at_raw:
+                try:
+                    created_at = datetime.fromisoformat(created_at_raw)
+                    if datetime.now() - created_at >= timedelta(seconds=15):
+                        db.set_swish_status(
+                            booking_id,
+                            "PAID",
+                            booking_status="CONFIRMED",
+                            updated_at=datetime.now().isoformat(timespec="seconds"),
+                        )
+                        swish_status = "PAID"
+                except ValueError:
+                    pass
+
+        if swish_status == "PAID" and (booking.get("status") or "").upper() != "CONFIRMED":
+            db.set_swish_status(
+                booking_id,
+                "PAID",
+                booking_status="CONFIRMED",
+                updated_at=datetime.now().isoformat(timespec="seconds"),
+            )
+
+        return self.end_json(200, {"bookingId": booking_id, "swishStatus": swish_status})
+
+    def handle_dev_swish_mark(self, raw_query: str) -> None:
+        if self._swish_mode() != "mock":
+            return self.api_error(403, "forbidden", "Endpoint available only when SWISH_MODE=mock", legacy_error="SWISH_MODE must be mock")
+
+        params = parse_query(raw_query)
+        booking_id_str = params.get("bookingId")
+        target_status = (params.get("status") or "").upper()
+
+        if not booking_id_str:
+            return self.api_error(400, "invalid_request", "bookingId is required", legacy_error="bookingId is required")
+        if target_status not in {"PAID", "FAILED"}:
+            return self.api_error(400, "invalid_request", "status must be PAID or FAILED", legacy_error="status must be PAID or FAILED")
+        try:
+            booking_id = int(booking_id_str)
+        except ValueError:
+            return self.api_error(400, "invalid_request", "bookingId must be an integer", legacy_error="bookingId must be an integer")
+
+        booking = db.get_booking_by_id(booking_id)
+        if not booking:
+            return self.api_error(404, "not_found", "Booking not found", legacy_error="Booking not found")
+
+        booking_status = "CONFIRMED" if target_status == "PAID" else "CANCELLED"
+        db.set_swish_status(
+            booking_id,
+            target_status,
+            booking_status=booking_status,
+            updated_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        return self.end_json(200, {"bookingId": booking_id, "swishStatus": target_status, "bookingStatus": booking_status})
+
+    def handle_swish_qr(self, params: Dict[str, str], *, head_only: bool = False) -> None:
+        booking_id_str = params.get("bookingId")
+        if not booking_id_str:
+            return self.api_error(400, "invalid_request", "bookingId is required", legacy_error="bookingId is required")
+        try:
+            booking_id = int(booking_id_str)
+        except ValueError:
+            return self.api_error(400, "invalid_request", "bookingId must be an integer", legacy_error="bookingId must be an integer")
+
+        booking = db.get_booking_by_id(booking_id)
+        if not booking:
+            return self.api_error(404, "not_found", "Booking not found", legacy_error="Booking not found")
+        token = booking.get("swish_token")
+        if not token:
+            return self.api_error(404, "not_found", "Swish token not found for booking", legacy_error="Swish token not found")
+
+        qr_payload = self._swish_build_app_url(token)
+        svg = self._render_qr_svg(qr_payload, size=320)
+        body = svg.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(body)
 
     def _render_notice_svg(self, text: str, size: int = 320) -> str:
         escaped = html_lib.escape(text)
@@ -958,35 +1243,42 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def handle_swish_callback(self) -> None:
-        """Handle callbacks from Swish Commerce API.
+        """Handle Swish callback payload.
 
-        Expected JSON payload:
-        {
-            "paymentReference": <bookingId>,
-            "status": "PAID" | "CANCELLED" | "EXPIRED" | "ERROR"
-        }
-
-        Updates booking status accordingly.  Always returns 200 OK.
+        TODO: In live mode, verify Swish callback authenticity (mTLS/signature)
+        and map full Commerce payload fields before mutating booking state.
         """
+        if self._swish_mode() != "mock":
+            return self.api_error(
+                501,
+                "not_implemented",
+                "Swish callback verification requires cert configuration",
+                legacy_error="cert not configured",
+            )
         try:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length > 0 else b"{}"
             data = json.loads(raw.decode("utf-8"))
         except Exception:
-            return self.end_json(400, {"error": "Invalid JSON"})
-        booking_id = data.get("paymentReference")
+            return self.api_error(400, "invalid_json", "Request body must be valid JSON", legacy_error="Invalid JSON")
+
+        booking_id = data.get("paymentReference") or data.get("bookingId")
         status = (data.get("status") or "").upper()
         if not booking_id:
-            return self.end_json(400, {"error": "paymentReference is required"})
+            return self.api_error(400, "invalid_request", "paymentReference is required", legacy_error="paymentReference is required")
         try:
             booking_id = int(booking_id)
         except ValueError:
-            return self.end_json(400, {"error": "paymentReference must be integer"})
+            return self.api_error(400, "invalid_request", "paymentReference must be integer", legacy_error="paymentReference must be integer")
+
+        booking = db.get_booking_by_id(booking_id)
+        if not booking:
+            return self.api_error(404, "not_found", "Booking not found", legacy_error="Booking not found")
+
         if status == "PAID":
-            booking_before = db.get_booking_by_id(booking_id)
-            was_pending = bool(booking_before and booking_before.get("status") == "PENDING_PAYMENT")
-            db.mark_confirmed(booking_id)
+            db.set_swish_status(booking_id, "PAID", booking_status="CONFIRMED")
             booking_after = db.get_booking_by_id(booking_id)
+            was_pending = bool(booking and booking.get("status") == "PENDING_PAYMENT")
             if was_pending and booking_after and booking_after.get("status") == "CONFIRMED":
                 try:
                     NOTIFIER.notify_booking_confirmed(booking_after)
@@ -995,9 +1287,11 @@ class Handler(BaseHTTPRequestHandler):
                         "notification dispatch failed event=booking.confirmed booking_id=%s",
                         booking_id,
                     )
-        elif status in ("CANCELLED", "EXPIRED", "ERROR"):
-            db.cancel_booking(booking_id)
-        return self.end_json(200, {"ok": True})
+        elif status in {"FAILED", "CANCELLED", "EXPIRED", "ERROR"}:
+            db.set_swish_status(booking_id, "FAILED", booking_status="CANCELLED")
+        else:
+            return self.api_error(400, "invalid_request", "status must be PAID or FAILED", legacy_error="invalid status")
+        return self.end_json(200, {"ok": True, "bookingId": booking_id, "swishStatus": "PAID" if status == "PAID" else "FAILED"})
 
     def serve_pay_page(self, params: Dict[str, str]) -> None:
         """Serve the payment page for a given booking ID.
@@ -1428,47 +1722,42 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _get_or_create_payment_details(self, booking_id: int) -> Dict[str, Any]:
-        """Return payment details for a booking, creating a request if needed.
-
-        NOTE:
-        TODO: Replace the placeholder branch with real Swish Commerce API
-        request creation when cert/config management is finalized.
-        """
+        """Legacy helper used by `/pay` page."""
         booking = db.get_booking_by_id(booking_id)
-        amount = booking["price"]
-        swish_id = booking.get("swish_id")
-        if not swish_id:
-            import uuid
-            swish_id = str(uuid.uuid4()).replace("-", "")
-            db.set_swish_id(booking_id, swish_id)
-
-        booking_reference = booking.get("booking_reference")
-        swish_token = None
-        integration_status = "NOT_CONFIGURED"
-        integration_message = (
-            "Sätt SWISH_COMMERCE_MERCHANT_ALIAS, SWISH_COMMERCE_CERT_PATH "
-            "och SWISH_COMMERCE_KEY_PATH för att aktivera token-baserad Swish Commerce."
-        )
-        if self._swish_is_configured():
-            integration_status = "NOT_IMPLEMENTED"
-            integration_message = (
-                "Swish Commerce API-anrop är ännu inte implementerade. "
-                "TODO: skapa payment request och hämta token."
+        if not booking:
+            raise ValueError("Booking not found")
+        swish_status = (booking.get("swish_status") or "").upper()
+        if (
+            self._is_payable_booking_status((booking.get("status") or "").upper())
+            and not booking.get("swish_token")
+            and not (booking.get("swish_request_id") and swish_status in db.SWISH_PENDING_STATUSES)
+        ):
+            now_iso = datetime.now().isoformat(timespec="seconds")
+            amount = int(booking.get("price") or 0)
+            booking_ref = booking.get("booking_reference") or f"BOOKING-{booking_id}"
+            created = self._swish_client().create_payment_request(amount, f"DHS {booking_ref}", self._swish_callback_url())
+            db.set_swish_payment_request(
+                booking_id,
+                instruction_uuid=created["instruction_uuid"],
+                token=created["token"],
+                request_id=created["request_id"],
+                status="PENDING",
+                created_at=now_iso,
+                updated_at=now_iso,
             )
-            # TODO: Call Swish Commerce API here and assign `swish_token`.
-
-        swish_app_url = self._swish_build_app_url(swish_token) if swish_token else None
-        qr_image_url = f"/api/swish/qr?bookingId={booking_id}"
+            booking = db.get_booking_by_id(booking_id)
+            if not booking:
+                raise ValueError("Booking not found")
         return {
             "bookingId": booking_id,
-            "bookingReference": booking_reference,
-            "price": amount,
-            "swishId": swish_id,
-            "swishToken": swish_token,
-            "swishAppUrl": swish_app_url,
-            "qrImageUrl": qr_image_url,
-            "integrationStatus": integration_status,
-            "integrationMessage": integration_message,
+            "bookingReference": booking.get("booking_reference"),
+            "price": booking["price"],
+            "swishId": booking.get("swish_id"),
+            "swishToken": None,
+            "swishAppUrl": None,
+            "qrImageUrl": f"/api/swish/qr?bookingId={booking_id}",
+            "integrationStatus": "NOT_CONFIGURED",
+            "integrationMessage": "Use /api/swish/paymentrequest for mock payment flow.",
         }
 
     # ---- Static file serving ----

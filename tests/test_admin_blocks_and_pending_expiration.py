@@ -207,7 +207,7 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
         self.assertFalse(payload_after_second.get("available"))
 
     def test_pending_payment_expires_and_no_longer_blocks_slot(self) -> None:
-        start = datetime(2026, 5, 3, 10, 0)
+        start = (datetime.now() - timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
         end = start + timedelta(hours=2)
         booking_id, _ = db.create_booking("KAP", "TWO_HOURS", start, end)
         second_booking_id, _ = db.create_booking("KAP", "TWO_HOURS", start, end)

@@ -11,12 +11,12 @@
     <div class="header-inner">
       <p class="kicker">Trygg släpvagnsuthyrning</p>
       <h1>Dalsjöfors Hyrservice</h1>
-      <p class="lead">Boka ditt släp i fyra enkla steg</p>
+      <p class="lead">Boka ditt släp i fem enkla steg</p>
     </div>
   </header>
 
   <main id="wizard">
-    <div id="progress" class="progress" aria-live="polite">Steg 1 av 4</div>
+    <div id="progress" class="progress" aria-live="polite">Steg 1 av 5</div>
 
     <!-- Steg 1: Välj släp -->
     <section id="step1" class="step">
@@ -80,12 +80,28 @@
     <!-- Steg 4: Sammanfattning -->
     <section id="step4" class="step" hidden>
       <h2>Sammanfattning</h2>
-      <p class="step-intro">Kontrollera uppgifterna innan du går vidare till Swish-betalning.</p>
+      <p class="step-intro">Kontrollera uppgifterna. Betalningsförfrågan skapas automatiskt.</p>
       <div id="summary" class="summary-list"></div>
+      <div id="payment-panel" class="payment-panel" hidden>
+        <p id="payment-info" class="info loading">Skapar betalningsförfrågan …</p>
+        <div class="payment-actions">
+          <a id="open-swish-link" class="open-swish-link" href="#" hidden>Öppna Swish</a>
+          <button type="button" id="retry-payment" hidden>Försök igen</button>
+        </div>
+        <div class="qr-wrap" id="qr-wrap" hidden>
+          <img id="payment-qr" src="" alt="Swish QR" width="320" height="320">
+        </div>
+      </div>
       <div class="actions">
         <button type="button" id="step4-back">Tillbaka</button>
-        <button type="button" id="proceed-pay">Fortsätt till betalning</button>
       </div>
+    </section>
+
+    <section id="step5" class="step" hidden>
+      <h2>Bekräftelse</h2>
+      <p class="step-intro">Din betalning är registrerad och bokningen är bekräftad.</p>
+      <div id="confirmation" class="summary-list"></div>
+      <p class="lock-code">Kodlåskod: <strong>6392</strong></p>
     </section>
 
     <!-- Dev‑panel (visas endast med ?dev=1) -->
