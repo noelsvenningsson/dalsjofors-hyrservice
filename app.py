@@ -77,7 +77,6 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 logger = logging.getLogger(__name__)
 NOTIFIER = notifications.create_notification_service_from_env()
-_ADMIN_TOKEN_WARNING_EMITTED = False
 ADMIN_SESSION_COOKIE_NAME = "admin_session"
 ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 ADMIN_LOGIN_FAILURE_DELAY_SECONDS = 0.3
@@ -129,22 +128,64 @@ def _constant_time_secret_match(provided_value: str, expected_value: str) -> boo
     return hmac.compare_digest(provided_hash, expected_hash)
 
 
-def _warn_admin_auth_disabled_once() -> None:
-    """Warn once when admin auth is disabled in local development."""
-    global _ADMIN_TOKEN_WARNING_EMITTED
-    if _ADMIN_TOKEN_WARNING_EMITTED:
-        return
-    _ADMIN_TOKEN_WARNING_EMITTED = True
-    logger.warning(
-        "ADMIN_TOKEN is not set; API admin/dev auth is disabled for local development. "
-        "Set ADMIN_TOKEN to protect /api/dev/* and /api/admin/* routes."
-    )
-
-
 def parse_query(query: str) -> Dict[str, str]:
     """Parse a URL query string into a dict of first values."""
     parsed = urllib.parse.parse_qs(query, keep_blank_values=True)
     return {k: v[0] for k, v in parsed.items() if v}
+
+
+def _test_trailer_label(trailer_type: str) -> str:
+    trailer = (trailer_type or "").upper()
+    if trailer == "GALLER":
+        return "Galler-slap"
+    return "Kapslap"
+
+
+def _test_receipt_period_label(rental_type: str, selected_date: str) -> str:
+    if (rental_type or "").upper() == "HELDAG":
+        return selected_date
+    return selected_date
+
+
+def process_due_test_bookings(now: Optional[datetime] = None) -> Dict[str, int]:
+    if now is None:
+        now = datetime.now()
+    processed_paid = 0
+    now_iso = now.isoformat(timespec="seconds")
+
+    due_rows = db.get_due_test_bookings_for_auto_paid(now)
+    for row in due_rows:
+        test_booking_id = int(row.get("id"))
+        if not db.mark_test_booking_paid(test_booking_id, now=now):
+            continue
+        processed_paid += 1
+        refreshed = db.get_test_booking_by_id(test_booking_id) or row
+
+        reference = refreshed.get("booking_reference") or f"TEST-{test_booking_id}"
+        trailer_label = _test_trailer_label(refreshed.get("trailer_type") or "")
+        date_label = (refreshed.get("created_at") or "")[:10]
+        period_label = _test_receipt_period_label(refreshed.get("rental_type") or "", date_label)
+        price_label = f"{refreshed.get('price')} kr"
+
+        admin_number = sms_provider.get_admin_sms_number_e164()
+        if admin_number and refreshed.get("sms_admin_sent_at") is None:
+            admin_message = (
+                f"Testbokning PAID: {reference} | {trailer_label} | {period_label} | {price_label}"
+            )
+            if sms_provider.send_sms(admin_number, admin_message):
+                db.mark_test_sms_admin_sent(test_booking_id, sent_at=now_iso)
+
+        target_number = refreshed.get("sms_target_temp")
+        if target_number and refreshed.get("sms_target_sent_at") is None:
+            target_message = (
+                f"Dalsjofors Hyrservice TEST: Kvitto {reference} | {trailer_label} | "
+                f"{period_label} | {price_label} | Betalning: PAID"
+            )
+            if sms_provider.send_sms(target_number, target_message):
+                db.mark_test_sms_target_sent(test_booking_id, sent_at=now_iso)
+
+    deleted = db.delete_due_test_bookings(now)
+    return {"processedPaid": processed_paid, "deleted": deleted}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -385,19 +426,16 @@ class Handler(BaseHTTPRequestHandler):
     def require_admin_api_auth(self) -> bool:
         expected_token = get_admin_token()
         if not expected_token:
-            if is_production_environment():
-                self.api_error(
-                    500,
-                    "server_misconfigured",
-                    "Server misconfigured",
-                    legacy_error="Server misconfigured",
-                )
-                return False
-            _warn_admin_auth_disabled_once()
-            return True
+            self.api_error(
+                500,
+                "server_misconfigured",
+                "Server misconfigured",
+                legacy_error="Server misconfigured",
+            )
+            return False
 
-        provided_bearer_token = self._extract_bearer_token()
-        if provided_bearer_token is not None and hmac.compare_digest(provided_bearer_token, expected_token):
+        provided_token = self._extract_admin_api_token()
+        if provided_token is not None and hmac.compare_digest(provided_token, expected_token):
             return True
         self.api_error(
             401,
@@ -406,6 +444,12 @@ class Handler(BaseHTTPRequestHandler):
             legacy_error="Unauthorized",
         )
         return False
+
+    def _extract_admin_api_token(self) -> Optional[str]:
+        header_token = (self.headers.get("X-Admin-Token") or "").strip()
+        if header_token:
+            return header_token
+        return self._extract_bearer_token()
 
     def _extract_bearer_token(self) -> Optional[str]:
         auth_header = (self.headers.get("Authorization") or "").strip()
@@ -424,8 +468,8 @@ class Handler(BaseHTTPRequestHandler):
         authorized = True
 
         if expected_token:
-            provided_bearer_token = self._extract_bearer_token()
-            if provided_bearer_token is None:
+            provided_token = self._extract_admin_api_token()
+            if provided_token is None:
                 authorized = False
                 logger.warning(
                     "DEV_ENDPOINT_HIT endpoint=%s bookingId=%s status=%s authorized=no",
@@ -436,11 +480,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.api_error(
                     401,
                     "unauthorized",
-                    "Missing bearer token",
+                    "Missing admin token",
                     legacy_error="Unauthorized",
                 )
                 return False
-            if not provided_bearer_token or not hmac.compare_digest(provided_bearer_token, expected_token):
+            if not provided_token or not hmac.compare_digest(provided_token, expected_token):
                 authorized = False
                 logger.warning(
                     "DEV_ENDPOINT_HIT endpoint=%s bookingId=%s status=%s authorized=no",
@@ -451,10 +495,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.api_error(
                     403,
                     "forbidden",
-                    "Invalid bearer token",
+                    "Invalid admin token",
                     legacy_error="Forbidden",
                 )
                 return False
+        else:
+            self.api_error(
+                500,
+                "server_misconfigured",
+                "Server misconfigured",
+                legacy_error="Server misconfigured",
+            )
+            return False
 
         logger.warning(
             "DEV_ENDPOINT_HIT endpoint=%s bookingId=%s status=%s authorized=%s",
@@ -556,6 +608,55 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return normalized
 
+    def _validate_required_test_phone(self, raw_value: Optional[str]) -> Optional[str]:
+        value = (raw_value or "").strip()
+        if not value:
+            self._invalid_field_error({"smsTo": "This field is required"})
+            return None
+        normalized = sms_provider.normalize_swedish_mobile(value)
+        if not normalized:
+            self._invalid_field_error({"smsTo": "Ange svensk mobil: +46xxxxxxxxx eller 07xxxxxxxx"})
+            return None
+        return normalized
+
+    def _validate_test_trailer_type(self, raw_value: Optional[str]) -> Optional[str]:
+        value = (raw_value or "GALLER").strip().upper()
+        if value == "KAP":
+            value = "KAPS"
+        if value not in db.VALID_TEST_TRAILER_TYPES:
+            self._invalid_field_error({"trailerType": "Must be one of: GALLER, KAPS"})
+            return None
+        return value
+
+    def _validate_test_rental_type(self, raw_value: Optional[str]) -> Optional[str]:
+        value = (raw_value or "HELDAG").strip().upper()
+        if value == "FULL_DAY":
+            value = "HELDAG"
+        if value not in db.VALID_TEST_RENTAL_TYPES:
+            self._invalid_field_error({"rentalType": "Must be HELDAG"})
+            return None
+        return value
+
+    def _validate_optional_test_date(self, raw_value: Optional[str]) -> Optional[str]:
+        value = (raw_value or "").strip()
+        if not value:
+            return datetime.now().strftime("%Y-%m-%d")
+        if not DATE_RE.match(value):
+            self._invalid_field_error({"date": "Expected format YYYY-MM-DD"})
+            return None
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            self._invalid_field_error({"date": "Invalid calendar date"})
+            return None
+        return value
+
+    def _test_price(self, trailer_type: str, rental_type: str, date_str: str) -> int:
+        price_trailer_type = "KAP" if trailer_type == "KAPS" else trailer_type
+        price_rental_type = "FULL_DAY" if rental_type == "HELDAG" else rental_type
+        day_start = datetime.strptime(f"{date_str}T00:00", "%Y-%m-%dT%H:%M")
+        return db.calculate_price(day_start, price_rental_type, price_trailer_type)
+
     def _trailer_label(self, trailer_type: str) -> str:
         return "Galler-släp" if trailer_type == "GALLER" else "Kåpsläp"
 
@@ -615,6 +716,18 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return parsed
 
+    def _process_due_test_bookings_if_relevant(self, path: str) -> None:
+        if not (
+            path.startswith("/api/admin/")
+            or path == "/api/health"
+            or path == "/api/payment-status"
+        ):
+            return
+        try:
+            process_due_test_bookings()
+        except Exception:
+            logger.exception("process_due_test_bookings failed path=%s", path)
+
     # ---- Request handlers ----
 
     def do_GET(self) -> None:
@@ -634,6 +747,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = parse_query(parsed.query)
+        self._process_due_test_bookings_if_relevant(path)
         if path.startswith("/api/dev/"):
             if not self.require_dev_auth(path=path, raw_query=parsed.query):
                 return
@@ -677,6 +791,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_admin_bookings(query_params)
         if path == "/api/admin/blocks":
             return self.handle_admin_blocks_get(query_params)
+        if path == "/api/admin/test-bookings":
+            return self.handle_admin_test_bookings_get()
 
         # Dev/test endpoint
         if path == "/api/health":
@@ -720,6 +836,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        self._process_due_test_bookings_if_relevant(path)
         if path.startswith("/api/dev/"):
             if not self.require_dev_auth(path=path, raw_query=parsed.query):
                 return
@@ -811,6 +928,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_admin_blocks_create()
         if path == "/api/admin/expire-pending":
             return self.handle_admin_expire_pending()
+        if path == "/api/admin/test-bookings":
+            return self.handle_admin_test_bookings_create()
+        if path == "/api/admin/test-bookings/run":
+            return self.handle_admin_test_bookings_run()
 
         return self.end_json(404, {"error": "Not Found"})
 
@@ -818,6 +939,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = parse_query(parsed.query)
+        self._process_due_test_bookings_if_relevant(path)
         if path.startswith("/api/dev/"):
             if not self.require_dev_auth(path=path, raw_query=parsed.query):
                 return
@@ -1197,6 +1319,88 @@ class Handler(BaseHTTPRequestHandler):
             + "".join(rects)
             + "</g></svg>"
         )
+
+    def _serialize_test_booking(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": row.get("id"),
+            "bookingReference": row.get("booking_reference"),
+            "status": row.get("status"),
+            "createdAt": row.get("created_at"),
+            "autoPaidAt": row.get("auto_paid_at"),
+            "deleteAt": row.get("delete_at"),
+            "trailerType": row.get("trailer_type"),
+            "rentalType": row.get("rental_type"),
+            "price": row.get("price"),
+            "smsAdminSentAt": row.get("sms_admin_sent_at"),
+            "smsTargetSentAt": row.get("sms_target_sent_at"),
+        }
+
+    def _build_test_receipt_preview(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        trailer_type = row.get("trailer_type") or "GALLER"
+        trailer_label = "Gallerslap" if trailer_type == "GALLER" else "Kapslap"
+        return {
+            "bookingReference": row.get("booking_reference"),
+            "status": row.get("status"),
+            "trailerType": trailer_type,
+            "trailerLabel": trailer_label,
+            "rentalType": row.get("rental_type"),
+            "date": (row.get("created_at") or "")[:10],
+            "price": row.get("price"),
+            "paidAt": row.get("auto_paid_at") if row.get("status") == "PAID" else None,
+        }
+
+    def handle_admin_test_bookings_create(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length) if length > 0 else b"{}"
+            data = json.loads(body.decode("utf-8"))
+        except Exception:
+            return self.api_error(400, "invalid_json", "Request body must be valid JSON", legacy_error="Invalid JSON")
+
+        sms_to = self._validate_required_test_phone(data.get("smsTo"))
+        trailer_type = self._validate_test_trailer_type(data.get("trailerType"))
+        rental_type = self._validate_test_rental_type(data.get("rentalType"))
+        date_str = self._validate_optional_test_date(data.get("date"))
+        if sms_to is None or trailer_type is None or rental_type is None or date_str is None:
+            return
+
+        try:
+            price = self._test_price(trailer_type, rental_type, date_str)
+            row = db.create_test_booking(
+                trailer_type=trailer_type,
+                rental_type=rental_type,
+                price=price,
+                sms_target_temp=sms_to,
+            )
+        except ValueError as exc:
+            return self.api_error(400, "invalid_request", str(exc), legacy_error=str(exc))
+        except Exception as exc:
+            return self.api_error(500, "internal_error", "Internal server error", legacy_error=str(exc))
+
+        return self.end_json(
+            201,
+            {
+                "id": row.get("id"),
+                "bookingReference": row.get("booking_reference"),
+                "status": row.get("status"),
+                "autoPaidAt": row.get("auto_paid_at"),
+                "deleteAt": row.get("delete_at"),
+            },
+        )
+
+    def handle_admin_test_bookings_run(self) -> None:
+        summary = process_due_test_bookings()
+        return self.end_json(200, summary)
+
+    def handle_admin_test_bookings_get(self) -> None:
+        rows = db.list_test_bookings(limit=10)
+        payload_rows = []
+        for row in rows:
+            item = self._serialize_test_booking(row)
+            if row.get("status") == "PAID":
+                item["receiptPreview"] = self._build_test_receipt_preview(row)
+            payload_rows.append(item)
+        return self.end_json(200, {"testBookings": payload_rows})
 
     def handle_admin_bookings(self, params: Dict[str, str]) -> None:
         """Return booking rows for admin tooling."""
@@ -1980,8 +2184,6 @@ def run() -> None:
         raise RuntimeError("ADMIN_PASSWORD is required in production environments")
     if is_production_environment() and not get_admin_session_secret():
         raise RuntimeError("ADMIN_SESSION_SECRET is required in production environments")
-    if not is_production_environment() and not get_admin_token():
-        _warn_admin_auth_disabled_once()
     port = int(os.environ.get("PORT", "8000"))
     server = HTTPServer(("0.0.0.0", port), Handler)
     print(f"Running Dalsjöfors Hyrservice on http://localhost:{port}")

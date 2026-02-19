@@ -18,17 +18,56 @@
   const blockEndEl = document.getElementById('block-end');
   const blockReasonEl = document.getElementById('block-reason');
 
+  const testBookingsRowsEl = document.getElementById('test-bookings-rows');
+  const testBookingsFeedbackEl = document.getElementById('test-bookings-feedback');
+  const latestTestBookingResultEl = document.getElementById('latest-test-booking-result');
+  const testBookingFormEl = document.getElementById('test-booking-form');
+  const testSmsToEl = document.getElementById('test-sms-to');
+  const testTrailerTypeEl = document.getElementById('test-trailer-type');
+  const testDateEl = document.getElementById('test-date');
+  const testRentalTypeEl = document.getElementById('test-rental-type');
+
   const refreshBookingsBtn = document.getElementById('refresh-bookings');
   const refreshBlocksBtn = document.getElementById('refresh-blocks');
+  const refreshTestBookingsBtn = document.getElementById('refresh-test-bookings');
+  const runTestBookingsNowBtn = document.getElementById('run-test-bookings-now');
 
   const state = {
     bookings: [],
-    blocks: []
+    blocks: [],
+    testBookings: [],
+    countdownTimerId: null
   };
+
+  function getAdminToken() {
+    const key = 'adminApiToken';
+    const existing = window.localStorage.getItem(key);
+    if (existing) return existing;
+    const entered = window.prompt('Ange ADMIN_TOKEN för admin-API:');
+    if (!entered) return '';
+    const trimmed = entered.trim();
+    if (!trimmed) return '';
+    window.localStorage.setItem(key, trimmed);
+    return trimmed;
+  }
+
+  async function adminFetch(path, options) {
+    const token = getAdminToken();
+    const requestOptions = Object.assign({ cache: 'no-store' }, options || {});
+    requestOptions.headers = Object.assign({}, requestOptions.headers || {});
+    if (token) {
+      requestOptions.headers['X-Admin-Token'] = token;
+    }
+    const response = await fetch(path, requestOptions);
+    if (response.status === 401) {
+      window.localStorage.removeItem('adminApiToken');
+    }
+    return response;
+  }
 
   function formatTrailer(type) {
     if (type === 'GALLER') return 'Gallersläp';
-    if (type === 'KAP') return 'Kåpsläp';
+    if (type === 'KAP' || type === 'KAPS') return 'Kåpsläp';
     return type || '-';
   }
 
@@ -36,12 +75,14 @@
     if (status === 'PENDING_PAYMENT') return 'Pending';
     if (status === 'CONFIRMED') return 'Confirmed';
     if (status === 'CANCELLED') return 'Cancelled';
+    if (status === 'PENDING') return 'Pending';
+    if (status === 'PAID') return 'PAID';
     return status || '-';
   }
 
   function statusClass(status) {
-    if (status === 'PENDING_PAYMENT') return 'status-pending';
-    if (status === 'CONFIRMED') return 'status-confirmed';
+    if (status === 'PENDING_PAYMENT' || status === 'PENDING') return 'status-pending';
+    if (status === 'CONFIRMED' || status === 'PAID') return 'status-confirmed';
     if (status === 'CANCELLED') return 'status-cancelled';
     return '';
   }
@@ -62,6 +103,17 @@
     const end = formatDateTime(endDt);
     if (start === '-' || end === '-') return '-';
     return start + ' - ' + end;
+  }
+
+  function formatCountdown(deleteAt) {
+    if (!deleteAt) return '-';
+    const deleteMs = Date.parse(deleteAt);
+    if (!Number.isFinite(deleteMs)) return '-';
+    const diff = Math.max(0, Math.floor((deleteMs - Date.now()) / 1000));
+    const minutes = Math.floor(diff / 60);
+    const seconds = diff % 60;
+    if (diff <= 0) return 'Utgår nu';
+    return String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0');
   }
 
   function escapeHtml(value) {
@@ -138,10 +190,34 @@
     bookingsFeedbackEl.textContent = rows.length + ' bokningar visas.';
   }
 
+  function renderTestBookings() {
+    const rows = state.testBookings.slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    if (!rows.length) {
+      testBookingsRowsEl.innerHTML = '<tr><td colspan="5">Inga aktiva testbokningar.</td></tr>';
+      return;
+    }
+    testBookingsRowsEl.innerHTML = rows.map((row) => {
+      const preview = row.receiptPreview;
+      const previewHtml = preview
+        ? '<div><strong>' + escapeHtml(preview.bookingReference || '-') + '</strong><br>' +
+          'Status: ' + escapeHtml(preview.status || '-') + '<br>' +
+          'Släp: ' + escapeHtml(formatTrailer(preview.trailerType || '-')) + '<br>' +
+          'Pris: ' + escapeHtml(String(preview.price || '-')) + ' kr</div>'
+        : '-';
+      return '<tr>' +
+        '<td>' + escapeHtml(row.bookingReference || ('TEST-' + row.id)) + '</td>' +
+        '<td><span class="status-pill ' + escapeHtml(statusClass(row.status)) + '">' + escapeHtml(formatStatus(row.status)) + '</span></td>' +
+        '<td>' + escapeHtml(formatCountdown(row.deleteAt)) + '</td>' +
+        '<td>' + escapeHtml(formatDateTime(row.autoPaidAt)) + '</td>' +
+        '<td>' + previewHtml + '</td>' +
+      '</tr>';
+    }).join('');
+  }
+
   async function fetchBookings() {
     bookingsFeedbackEl.textContent = 'Laddar bokningar...';
     try {
-      const response = await fetch('/api/admin/bookings', { cache: 'no-store' });
+      const response = await adminFetch('/api/admin/bookings');
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data && data.error ? data.error : 'Kunde inte ladda bokningar');
@@ -181,7 +257,7 @@
   async function fetchBlocks() {
     blocksFeedbackEl.textContent = 'Laddar blockeringar...';
     try {
-      const response = await fetch('/api/admin/blocks', { cache: 'no-store' });
+      const response = await adminFetch('/api/admin/blocks');
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data && data.error ? data.error : 'Kunde inte ladda blockeringar');
@@ -192,6 +268,23 @@
     } catch (error) {
       blocksFeedbackEl.textContent = 'Fel: ' + error.message;
       blocksRowsEl.innerHTML = '';
+    }
+  }
+
+  async function fetchTestBookings() {
+    testBookingsFeedbackEl.textContent = 'Laddar testbokningar...';
+    try {
+      const response = await adminFetch('/api/admin/test-bookings');
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data && data.error ? data.error : 'Kunde inte ladda testbokningar');
+      }
+      state.testBookings = Array.isArray(data.testBookings) ? data.testBookings : [];
+      renderTestBookings();
+      testBookingsFeedbackEl.textContent = state.testBookings.length + ' testbokningar hämtade.';
+    } catch (error) {
+      testBookingsFeedbackEl.textContent = 'Fel: ' + error.message;
+      testBookingsRowsEl.innerHTML = '';
     }
   }
 
@@ -206,7 +299,7 @@
 
     blocksFeedbackEl.textContent = 'Skapar blockering...';
     try {
-      const response = await fetch('/api/admin/blocks', {
+      const response = await adminFetch('/api/admin/blocks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -226,7 +319,7 @@
   async function deleteBlock(blockId) {
     blocksFeedbackEl.textContent = 'Tar bort blockering...';
     try {
-      const response = await fetch('/api/admin/blocks?id=' + encodeURIComponent(blockId), {
+      const response = await adminFetch('/api/admin/blocks?id=' + encodeURIComponent(blockId), {
         method: 'DELETE'
       });
       const data = await response.json();
@@ -240,13 +333,67 @@
     }
   }
 
+  async function createTestBooking(event) {
+    event.preventDefault();
+    const payload = {
+      smsTo: testSmsToEl.value.trim(),
+      trailerType: testTrailerTypeEl.value,
+      date: testDateEl.value || undefined,
+      rentalType: testRentalTypeEl.value
+    };
+    testBookingsFeedbackEl.textContent = 'Skapar testbokning...';
+    try {
+      const response = await adminFetch('/api/admin/test-bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data && data.error ? data.error : 'Kunde inte skapa testbokning');
+      }
+      latestTestBookingResultEl.textContent =
+        'Skapad: ' + (data.bookingReference || ('TEST-' + data.id)) +
+        ' | Auto-PAID: ' + formatDateTime(data.autoPaidAt) +
+        ' | Raderas: ' + formatDateTime(data.deleteAt);
+      testSmsToEl.value = '';
+      await fetchTestBookings();
+    } catch (error) {
+      testBookingsFeedbackEl.textContent = 'Fel: ' + error.message;
+    }
+  }
+
+  async function runTestBookingsNow() {
+    testBookingsFeedbackEl.textContent = 'Kör kontroll...';
+    try {
+      const response = await adminFetch('/api/admin/test-bookings/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data && data.error ? data.error : 'Kunde inte köra kontroll');
+      }
+      latestTestBookingResultEl.textContent =
+        'Kontroll klar: processedPaid=' + String(data.processedPaid || 0) +
+        ', deleted=' + String(data.deleted || 0);
+      await fetchTestBookings();
+    } catch (error) {
+      testBookingsFeedbackEl.textContent = 'Fel: ' + error.message;
+    }
+  }
+
   function bindEvents() {
     refreshBookingsBtn.addEventListener('click', fetchBookings);
     refreshBlocksBtn.addEventListener('click', fetchBlocks);
+    refreshTestBookingsBtn.addEventListener('click', fetchTestBookings);
+    runTestBookingsNowBtn.addEventListener('click', runTestBookingsNow);
     filterDateEl.addEventListener('change', renderBookings);
     filterStatusEl.addEventListener('change', renderBookings);
     filterTrailerEl.addEventListener('change', renderBookings);
     blockFormEl.addEventListener('submit', createBlock);
+    testBookingFormEl.addEventListener('submit', createTestBooking);
 
     blocksRowsEl.addEventListener('click', function (event) {
       const target = event.target;
@@ -259,14 +406,26 @@
   }
 
   function initDefaults() {
-    filterDateEl.value = new Date().toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+    filterDateEl.value = today;
+    testDateEl.value = today;
+  }
+
+  function startCountdownRefresh() {
+    if (state.countdownTimerId !== null) return;
+    state.countdownTimerId = window.setInterval(function () {
+      if (!state.testBookings.length) return;
+      renderTestBookings();
+    }, 1000);
   }
 
   async function init() {
     initDefaults();
     bindEvents();
+    startCountdownRefresh();
     await fetchBookings();
     await fetchBlocks();
+    await fetchTestBookings();
   }
 
   init();

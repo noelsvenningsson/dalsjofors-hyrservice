@@ -43,7 +43,7 @@ def send_sms(to_e164: str, message: str) -> bool:
     from_number = _env("TWILIO_FROM_NUMBER")
     if not account_sid or not auth_token or not from_number:
         logger.warning(
-            "SMS not sent: missing Twilio env vars (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER)."
+            "SMS disabled: missing Twilio env vars (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER)."
         )
         return False
 

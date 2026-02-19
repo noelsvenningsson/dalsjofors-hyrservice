@@ -100,6 +100,10 @@ body {
   padding: 0.55rem 0.8rem;
 }
 
+.button-secondary {
+  background: #3f5f83;
+}
+
 .filters {
   margin-top: 0.8rem;
   display: grid;
@@ -255,4 +259,10 @@ a.link {
   #blocks-rows td:nth-child(4)::before { content: "Slut: "; }
   #blocks-rows td:nth-child(5)::before { content: "Orsak: "; }
   #blocks-rows td:nth-child(6)::before { content: "Åtgärd: "; }
+
+  #test-bookings-rows td:nth-child(1)::before { content: "Referens: "; }
+  #test-bookings-rows td:nth-child(2)::before { content: "Status: "; }
+  #test-bookings-rows td:nth-child(3)::before { content: "Raderas om: "; }
+  #test-bookings-rows td:nth-child(4)::before { content: "Auto-PAID: "; }
+  #test-bookings-rows td:nth-child(5)::before { content: "Kvitto: "; }
 }

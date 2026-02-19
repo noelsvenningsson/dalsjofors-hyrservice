@@ -139,6 +139,24 @@ def init_db() -> None:
         );
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS test_bookings (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at         TEXT NOT NULL,
+            auto_paid_at       TEXT NOT NULL,
+            delete_at          TEXT NOT NULL,
+            status             TEXT NOT NULL CHECK (status IN ('PENDING', 'PAID')),
+            booking_reference  TEXT UNIQUE,
+            trailer_type       TEXT NOT NULL,
+            rental_type        TEXT NOT NULL,
+            price              INTEGER NOT NULL,
+            sms_target_temp    TEXT,
+            sms_admin_sent_at  TEXT,
+            sms_target_sent_at TEXT
+        );
+        """
+    )
     # Optional meta table for future schema versioning
     conn.execute(
         """
@@ -179,11 +197,19 @@ def init_db() -> None:
         ON trailer_blocks (trailer_type, start_dt, end_dt)
         """
     )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_test_bookings_due
+        ON test_bookings (status, auto_paid_at, delete_at)
+        """
+    )
     conn.commit()
     conn.close()
 
 VALID_TRAILER_TYPES = {"GALLER", "KAP"}
 VALID_RENTAL_TYPES = {"TWO_HOURS", "FULL_DAY"}
+VALID_TEST_TRAILER_TYPES = {"GALLER", "KAPS"}
+VALID_TEST_RENTAL_TYPES = {"HELDAG"}
 
 
 class SlotTakenError(ValueError):
@@ -901,3 +927,208 @@ def get_bookings(status: Optional[str] = None) -> list[dict]:
 def _generate_booking_reference(created_at: datetime, booking_id: int) -> str:
     """Build a deterministic reference ID for customer-facing flows."""
     return f"DHS-{created_at.strftime('%Y%m%d')}-{booking_id:06d}"
+
+
+def _normalize_test_trailer_type(trailer_type: str) -> str:
+    trailer_value = (trailer_type or "").strip().upper()
+    if trailer_value == "KAP":
+        trailer_value = "KAPS"
+    if trailer_value not in VALID_TEST_TRAILER_TYPES:
+        raise ValueError(f"Unknown test trailer type: {trailer_value}")
+    return trailer_value
+
+
+def _normalize_test_rental_type(rental_type: str) -> str:
+    rental_value = (rental_type or "").strip().upper()
+    if rental_value in {"HELDAG", "FULL_DAY"}:
+        return "HELDAG"
+    raise ValueError(f"Unknown test rental type: {rental_value}")
+
+
+def _generate_test_booking_reference(created_at: datetime, booking_id: int) -> str:
+    return f"TEST-{created_at.strftime('%Y%m%d-%H%M%S')}-{booking_id}"
+
+
+def create_test_booking(
+    *,
+    trailer_type: str,
+    rental_type: str,
+    price: int,
+    sms_target_temp: str,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    trailer_type_u = _normalize_test_trailer_type(trailer_type)
+    rental_type_u = _normalize_test_rental_type(rental_type)
+    if now is None:
+        now = datetime.now()
+    created_at = now.isoformat(timespec="seconds")
+    due_at = (now + timedelta(minutes=5)).isoformat(timespec="seconds")
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO test_bookings (
+                created_at,
+                auto_paid_at,
+                delete_at,
+                status,
+                booking_reference,
+                trailer_type,
+                rental_type,
+                price,
+                sms_target_temp
+            )
+            VALUES (?, ?, ?, 'PENDING', NULL, ?, ?, ?, ?)
+            """,
+            (created_at, due_at, due_at, trailer_type_u, rental_type_u, int(price), sms_target_temp),
+        )
+        test_booking_id = int(cur.lastrowid)
+        booking_reference = _generate_test_booking_reference(now, test_booking_id)
+        conn.execute(
+            """
+            UPDATE test_bookings
+            SET booking_reference = ?
+            WHERE id = ?
+            """,
+            (booking_reference, test_booking_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM test_bookings WHERE id = ?",
+            (test_booking_id,),
+        ).fetchone()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def list_test_bookings(limit: int = 10) -> list[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM test_bookings
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_test_booking_by_id(test_booking_id: int) -> Optional[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT * FROM test_bookings WHERE id = ?",
+            (test_booking_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_due_test_bookings_for_auto_paid(now: Optional[datetime] = None) -> list[dict]:
+    if now is None:
+        now = datetime.now()
+    now_iso = now.isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM test_bookings
+            WHERE status = 'PENDING'
+              AND auto_paid_at <= ?
+            ORDER BY auto_paid_at, id
+            """,
+            (now_iso,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def mark_test_booking_paid(test_booking_id: int, *, now: Optional[datetime] = None) -> bool:
+    if now is None:
+        now = datetime.now()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE test_bookings
+            SET status = 'PAID'
+            WHERE id = ?
+              AND status = 'PENDING'
+              AND auto_paid_at <= ?
+            """,
+            (test_booking_id, now.isoformat(timespec="seconds")),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_test_sms_admin_sent(test_booking_id: int, *, sent_at: Optional[str] = None) -> bool:
+    effective_sent_at = sent_at or datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE test_bookings
+            SET sms_admin_sent_at = ?
+            WHERE id = ?
+              AND sms_admin_sent_at IS NULL
+            """,
+            (effective_sent_at, test_booking_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_test_sms_target_sent(test_booking_id: int, *, sent_at: Optional[str] = None) -> bool:
+    effective_sent_at = sent_at or datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE test_bookings
+            SET sms_target_sent_at = ?
+            WHERE id = ?
+              AND sms_target_sent_at IS NULL
+            """,
+            (effective_sent_at, test_booking_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_due_test_bookings(now: Optional[datetime] = None) -> int:
+    if now is None:
+        now = datetime.now()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            DELETE FROM test_bookings
+            WHERE delete_at <= ?
+            """,
+            (now.isoformat(timespec="seconds"),),
+        )
+        conn.commit()
+        return int(cur.rowcount)
+    finally:
+        conn.close()

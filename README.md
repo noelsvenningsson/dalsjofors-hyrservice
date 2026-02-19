@@ -65,9 +65,8 @@ Use `.env.example` as the source of truth.
 - `TWILIO_AUTH_TOKEN`: Twilio Auth Token
 - `TWILIO_FROM_NUMBER`: Twilio sender number in E.164 format
 - `ADMIN_SMS_NUMBER`: admin mobile (default `0709663485`, normalized internally)
-- `ADMIN_TOKEN`: admin auth token for `/api/dev/*` and `/api/admin/*` (bearer)
-  - Required in production
-  - Optional in local development (server logs a warning and admin auth is disabled)
+- `ADMIN_TOKEN`: admin auth token for `/api/dev/*` and `/api/admin/*` (`X-Admin-Token`)
+  - Required for admin/dev API endpoints in all environments
 - `ADMIN_PASSWORD`: admin password for browser login at `/admin/login`
   - Required in production
 - `ADMIN_SESSION_SECRET`: HMAC secret for signed admin session cookies (`/admin/login`)
@@ -125,13 +124,22 @@ Recent migrations and behavior updates are auto-applied by `db.init_db()`:
 - Customer number is cleared after successful customer receipt SMS
 - Customer number is also cleared when a booking becomes `CANCELLED` (including expiry cleanup)
 
+5. Ephemeral admin test bookings
+- Separate `test_bookings` table (never mixed with `bookings`)
+- Auto-PAID and auto-delete processing via `process_due_test_bookings()` on:
+  - `/api/admin/*`
+  - `/api/health`
+  - `/api/payment-status`
+- Test bookings are deleted after 5 minutes
+
 ## API Quick Reference
 
 All responses are JSON.
 
 Admin auth:
 - `/admin` requires a valid signed `admin_session` cookie.
-- `/api/dev/*` and `/api/admin/*` require `Authorization: Bearer <ADMIN_TOKEN>`.
+- `/api/dev/*` and `/api/admin/*` require `X-Admin-Token: <ADMIN_TOKEN>`.
+- `Authorization: Bearer <ADMIN_TOKEN>` is still accepted for backward compatibility.
 - Browser login endpoints:
   - `GET /admin/login` (HTML form)
   - `POST /admin/login` (creates signed session cookie, ~8h max age)
@@ -297,7 +305,7 @@ Required inputs (JSON body):
   - `start` + `end`
 
 Required header:
-- `Authorization: Bearer <ADMIN_TOKEN>`
+- `X-Admin-Token: <ADMIN_TOKEN>`
 
 Example success (`201`):
 
@@ -323,7 +331,7 @@ Required inputs:
 - None
 - Optional query params: `startDatetime`, `endDatetime` (for range filtering)
 Required header:
-- `Authorization: Bearer <ADMIN_TOKEN>`
+- `X-Admin-Token: <ADMIN_TOKEN>`
 
 Example success (`200`):
 
@@ -351,7 +359,7 @@ Common errors:
 Required inputs:
 - Query param: `id` (integer)
 Required header:
-- `Authorization: Bearer <ADMIN_TOKEN>`
+- `X-Admin-Token: <ADMIN_TOKEN>`
 
 Example success (`200`):
 
@@ -366,6 +374,58 @@ Common errors:
 - `400 {"error":"id is required"}`
 - `400 {"error":"id must be an integer"}`
 - `404 {"error":"Block not found"}`
+
+### `POST /api/admin/test-bookings`
+
+Creates an ephemeral test booking in a separate `test_bookings` table.
+
+Required header:
+- `X-Admin-Token: <ADMIN_TOKEN>`
+
+JSON body:
+- `smsTo` (required): Swedish mobile (`07...` or `+46...`)
+- `trailerType` (optional): `GALLER` or `KAPS` (default `GALLER`)
+- `date` (optional): `YYYY-MM-DD` (default today)
+- `rentalType` (optional): `HELDAG` (default `HELDAG`)
+
+Example:
+
+```bash
+curl -sS -X POST http://localhost:8000/api/admin/test-bookings \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -d '{"smsTo":"0701234567","trailerType":"GALLER","date":"2026-02-19","rentalType":"HELDAG"}' | jq
+```
+
+### `POST /api/admin/test-bookings/run`
+
+Runs due processing now (`PENDING -> PAID`, sends test SMS idempotently, deletes due rows).
+
+Required header:
+- `X-Admin-Token: <ADMIN_TOKEN>`
+
+Example:
+
+```bash
+curl -sS -X POST http://localhost:8000/api/admin/test-bookings/run \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -d '{}' | jq
+```
+
+### `GET /api/admin/test-bookings`
+
+Returns the latest 10 ephemeral test bookings (admin-only).
+
+Required header:
+- `X-Admin-Token: <ADMIN_TOKEN>`
+
+Example:
+
+```bash
+curl -sS http://localhost:8000/api/admin/test-bookings \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" | jq
+```
 
 ### `GET /api/health`
 
