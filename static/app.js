@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
     date: null,
     time: null,
     customerEmail: null,
+    receiptRequested: false,
     price: null,
     dayTypeLabel: null,
     available: null,
@@ -46,6 +47,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const dateInput = document.getElementById('rental-date');
   const timeContainer = document.getElementById('time-container');
   const timeSelect = document.getElementById('rental-time');
+  const receiptRequestedInput = document.getElementById('receipt-requested');
+  const customerEmailWrap = document.getElementById('customer-email-wrap');
   const customerEmailInput = document.getElementById('customer-email');
   const availabilityInfo = document.getElementById('availability-info');
   const step3Back = document.getElementById('step3-back');
@@ -252,8 +255,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const daySuffix = state.dayTypeLabel ? ` (${state.dayTypeLabel})` : '';
       pieces.push(`<p><strong>Pris:</strong> ${state.price} kr${daySuffix}</p>`);
     }
-    if (state.customerEmail) {
-      pieces.push('<p><strong>Mail för kvitto:</strong> Angivet</p>');
+    if (state.receiptRequested) {
+      pieces.push('<p><strong>E-postkvitto:</strong> Ja</p>');
+      pieces.push(`<p><strong>Mail för kvitto:</strong> ${state.customerEmail ? 'Angivet' : 'Saknas'}</p>`);
     }
     if (state.bookingReference) {
       pieces.push(`<p><strong>Bokningsreferens:</strong> ${state.bookingReference}</p>`);
@@ -309,6 +313,8 @@ document.addEventListener('DOMContentLoaded', () => {
       trailerType: state.trailerType,
       rentalType: state.rentalType,
       date: state.date,
+      receiptRequested: !!state.receiptRequested,
+      customerEmail: state.receiptRequested ? (state.customerEmail || '') : '',
     };
     if (state.rentalType === 'TWO_HOURS') payload.startTime = state.time;
     return fetch('/api/hold', {
@@ -491,16 +497,29 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   step3Next.addEventListener('click', () => {
+    const receiptRequested = !!receiptRequestedInput.checked;
     const customerEmail = (customerEmailInput.value || '').trim().toLowerCase();
+    if (receiptRequested && (!customerEmail || !customerEmail.includes('@') || customerEmail.length > 254)) {
+      customerEmailInput.setCustomValidity('Ange en giltig e-postadress för kvitto.');
+      customerEmailInput.reportValidity();
+      return;
+    }
+    customerEmailInput.setCustomValidity('');
     if (customerEmail && !customerEmailInput.checkValidity()) {
       customerEmailInput.reportValidity();
       return;
     }
-    state.customerEmail = customerEmail || null;
+    state.receiptRequested = receiptRequested;
+    state.customerEmail = receiptRequested ? (customerEmail || null) : null;
     if (state.customerEmail) {
       localStorage.setItem('customerEmail', state.customerEmail);
     } else {
       localStorage.removeItem('customerEmail');
+    }
+    if (state.receiptRequested) {
+      localStorage.setItem('receiptRequested', '1');
+    } else {
+      localStorage.removeItem('receiptRequested');
     }
     updateSummary();
     showStep(4);
@@ -520,10 +539,30 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   const storedCustomerEmail = localStorage.getItem('customerEmail');
+  const storedReceiptRequested = localStorage.getItem('receiptRequested');
+  if (storedReceiptRequested === '1') {
+    state.receiptRequested = true;
+    receiptRequestedInput.checked = true;
+  }
   if (storedCustomerEmail) {
     state.customerEmail = storedCustomerEmail;
     customerEmailInput.value = storedCustomerEmail;
   }
+  customerEmailWrap.hidden = !state.receiptRequested;
+  customerEmailInput.required = state.receiptRequested;
+
+  receiptRequestedInput.addEventListener('change', () => {
+    state.receiptRequested = !!receiptRequestedInput.checked;
+    customerEmailWrap.hidden = !state.receiptRequested;
+    customerEmailInput.required = state.receiptRequested;
+    if (!state.receiptRequested) {
+      customerEmailInput.value = '';
+      customerEmailInput.setCustomValidity('');
+      state.customerEmail = null;
+      localStorage.removeItem('customerEmail');
+    }
+    updateSummary();
+  });
 
   devBookBtn.addEventListener('click', () => {
     if (!state.trailerType || !state.rentalType || !state.date) {
@@ -534,6 +573,8 @@ document.addEventListener('DOMContentLoaded', () => {
       trailerType: state.trailerType,
       rentalType: state.rentalType,
       date: state.date,
+      receiptRequested: false,
+      customerEmail: '',
     };
     if (state.rentalType === 'TWO_HOURS') payload.startTime = state.time;
     fetch('/api/hold', {

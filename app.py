@@ -75,6 +75,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 STATIC_DIR = ROOT_DIR / "static"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+EMAIL_MAX_LENGTH = 254
 logger = logging.getLogger(__name__)
 NOTIFIER = notifications.create_notification_service_from_env()
 ADMIN_SESSION_COOKIE_NAME = "admin_session"
@@ -609,6 +610,14 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return normalized
 
+    def _validate_optional_customer_email(self, raw_value: Optional[str]) -> Optional[str]:
+        value = (raw_value or "").strip().lower()
+        if not value:
+            return None
+        if len(value) > EMAIL_MAX_LENGTH or "@" not in value:
+            return None
+        return value
+
     def _validate_required_test_phone(self, raw_value: Optional[str]) -> Optional[str]:
         value = (raw_value or "").strip()
         if not value:
@@ -701,6 +710,26 @@ class Handler(BaseHTTPRequestHandler):
             if sms_provider.send_sms(customer_phone, customer_message):
                 db.mark_sms_customer_sent(booking_id)
                 db.clear_customer_phone_temp(booking_id)
+
+        booking = db.get_booking_by_id(booking_id) or booking
+        receipt_booking = booking
+        required_receipt_fields = (
+            "id",
+            "booking_reference",
+            "trailer_type",
+            "start_dt",
+            "end_dt",
+            "price",
+            "customer_email_temp",
+            "receipt_requested_temp",
+        )
+        if any(receipt_booking.get(field) in (None, "") for field in required_receipt_fields):
+            receipt_booking = db.get_booking_by_id(booking_id) or receipt_booking
+        if str(receipt_booking.get("booking_reference") or "").startswith("TEST-"):
+            return
+        if receipt_booking.get("receipt_requested_temp") and receipt_booking.get("customer_email_temp"):
+            if notifications.send_receipt_webhook(receipt_booking):
+                db.clear_receipt_temp_fields(booking_id)
 
     def _parse_iso_datetime_field(self, field_name: str, raw_value: Optional[str]) -> Optional[datetime]:
         value = (raw_value or "").strip()
@@ -1536,8 +1565,22 @@ class Handler(BaseHTTPRequestHandler):
         rental_type_u = self._validate_rental_type(data.get("rentalType"))
         date_str = self._validate_date(data.get("date"))
         customer_phone = self._validate_optional_customer_phone(data.get("customerPhone"))
+        receipt_requested_raw = data.get("receiptRequested", False)
+        customer_email = self._validate_optional_customer_email(data.get("customerEmail"))
         if data.get("customerPhone") and customer_phone is None:
             return
+        if not isinstance(receipt_requested_raw, bool):
+            return self._invalid_field_error({"receiptRequested": "Must be boolean true/false"})
+        receipt_requested = receipt_requested_raw
+        if receipt_requested and not customer_email:
+            error_text = "Om du vill ha kvitto via e-post måste du ange en giltig e-postadress."
+            return self.api_error(
+                400,
+                "invalid_request",
+                error_text,
+                legacy_error=error_text,
+                details={"fields": {"customerEmail": "Ogiltig eller saknas"}},
+            )
         if trailer_type_u is None or rental_type_u is None or date_str is None:
             return
 
@@ -1553,7 +1596,13 @@ class Handler(BaseHTTPRequestHandler):
         # Create booking hold using existing logic
         try:
             booking_id, price = db.create_booking(
-                trailer_type_u, rental_type_u, start_dt, end_dt, customer_phone_temp=customer_phone
+                trailer_type_u,
+                rental_type_u,
+                start_dt,
+                end_dt,
+                customer_phone_temp=customer_phone,
+                customer_email_temp=customer_email if receipt_requested else None,
+                receipt_requested_temp=receipt_requested,
             )
         except db.SlotBlockedError as block_err:
             block = block_err.block

@@ -12,10 +12,19 @@ import hmac
 import json
 import logging
 import os
+import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Protocol
 
+import db
+
 logger = logging.getLogger(__name__)
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
 
 
 class NotificationProvider(Protocol):
@@ -97,3 +106,96 @@ def create_notification_service_from_env() -> NotificationService:
         providers.append(WebhookNotificationProvider(webhook_url, webhook_secret))
 
     return NotificationService(providers)
+
+
+def mask_email(email: str) -> str:
+    value = (email or "").strip()
+    if "@" not in value:
+        return "***"
+    local, domain = value.split("@", 1)
+    if not local:
+        return f"***@{domain}"
+    return f"{local[0]}***@{domain}"
+
+
+def _short_error(text: str, *, limit: int = 120) -> str:
+    value = (text or "").replace("\n", " ").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "..."
+
+
+def _post_json_with_single_redirect(url: str, payload: dict[str, Any], *, timeout_seconds: int) -> tuple[int, str]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    opener = urllib.request.build_opener(_NoRedirectHandler())
+
+    def _send_once(target_url: str) -> tuple[int, str, str | None]:
+        request = urllib.request.Request(target_url, data=body, headers=headers, method="POST")
+        try:
+            with opener.open(request, timeout=timeout_seconds) as response:
+                return int(response.getcode() or 0), response.read().decode("utf-8", errors="replace"), None
+        except urllib.error.HTTPError as err:
+            location = err.headers.get("Location")
+            error_body = err.read().decode("utf-8", errors="replace")
+            return int(err.code), error_body, location
+
+    status_code, response_body, location = _send_once(url)
+    if status_code in {301, 302, 303, 307, 308} and location:
+        redirect_url = urllib.parse.urljoin(url, location)
+        status_code, response_body, _ = _send_once(redirect_url)
+    return status_code, response_body
+
+
+def send_receipt_webhook(booking: dict[str, Any]) -> bool:
+    booking_id_raw = booking.get("id")
+    booking_id = int(booking_id_raw) if isinstance(booking_id_raw, int) or (isinstance(booking_id_raw, str) and booking_id_raw.isdigit()) else None
+    required_fields = ("booking_reference", "trailer_type", "start_dt", "end_dt", "price", "customer_email_temp", "receipt_requested_temp")
+    if booking_id is not None and any(booking.get(field) in (None, "") for field in required_fields):
+        booking = db.get_booking_by_id(booking_id) or booking
+
+    customer_email = (booking.get("customer_email_temp") or "").strip()
+    receipt_requested = bool(booking.get("receipt_requested_temp"))
+    if not receipt_requested or not customer_email:
+        return False
+
+    webhook_url = (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip()
+    if not webhook_url:
+        logger.info("WEBHOOK_DISABLED event=booking.confirmed bookingReference=%s", booking.get("booking_reference"))
+        return False
+
+    payload = {
+        "secret": (os.environ.get("NOTIFY_WEBHOOK_SECRET") or "").strip(),
+        "receiptRequested": True,
+        "customerEmail": customer_email,
+        "event": "booking.confirmed",
+        "bookingId": booking.get("id"),
+        "bookingReference": booking.get("booking_reference"),
+        "trailerType": booking.get("trailer_type"),
+        "startDt": booking.get("start_dt"),
+        "endDt": booking.get("end_dt"),
+        "price": booking.get("price"),
+        "swishStatus": "PAID",
+    }
+    logger.info(
+        "WEBHOOK_SEND event=booking.confirmed bookingReference=%s customerEmail=%s",
+        booking.get("booking_reference"),
+        mask_email(customer_email),
+    )
+    try:
+        status_code, response_body = _post_json_with_single_redirect(webhook_url, payload, timeout_seconds=10)
+    except Exception as exc:
+        logger.warning("WEBHOOK_FAIL status=0 error=%s", _short_error(str(exc)))
+        return False
+
+    if status_code == 200 and "ok" in response_body.lower():
+        logger.info("WEBHOOK_OK status=200 bookingReference=%s", booking.get("booking_reference"))
+        return True
+
+    logger.warning(
+        "WEBHOOK_FAIL status=%s error=%s bookingReference=%s",
+        status_code,
+        _short_error(response_body),
+        booking.get("booking_reference"),
+    )
+    return False

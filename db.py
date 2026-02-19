@@ -75,6 +75,8 @@ def _ensure_swish_columns(conn):
         ("swish_created_at", "TEXT"),
         ("swish_updated_at", "TEXT"),
         ("customer_phone_temp", "TEXT"),
+        ("customer_email_temp", "TEXT"),
+        ("receipt_requested_temp", "INTEGER"),
         ("sms_admin_sent_at", "TEXT"),
         ("sms_customer_sent_at", "TEXT"),
     ]
@@ -119,6 +121,8 @@ def init_db() -> None:
             swish_created_at  TEXT,
             swish_updated_at  TEXT,
             customer_phone_temp TEXT,
+            customer_email_temp TEXT,
+            receipt_requested_temp INTEGER,
             sms_admin_sent_at TEXT,
             sms_customer_sent_at TEXT
         );
@@ -416,6 +420,8 @@ def create_booking(
     start_datetime: datetime,
     end_datetime: datetime,
     customer_phone_temp: Optional[str] = None,
+    customer_email_temp: Optional[str] = None,
+    receipt_requested_temp: bool = False,
 ) -> Tuple[int, int]:
     """Attempt to create a new booking and return its ID and price.
 
@@ -490,10 +496,18 @@ def create_booking(
             """
             UPDATE bookings
             SET booking_reference = ?,
-                customer_phone_temp = ?
+                customer_phone_temp = ?,
+                customer_email_temp = ?,
+                receipt_requested_temp = ?
             WHERE id = ?
             """,
-            (booking_reference, customer_phone_temp, booking_id),
+            (
+                booking_reference,
+                customer_phone_temp,
+                customer_email_temp,
+                1 if receipt_requested_temp else 0,
+                booking_id,
+            ),
         )
         conn.execute("COMMIT")
         return booking_id, price
@@ -628,7 +642,9 @@ def cancel_booking(booking_id: int) -> None:
             """
             UPDATE bookings
             SET status = 'CANCELLED',
-                customer_phone_temp = NULL
+                customer_phone_temp = NULL,
+                customer_email_temp = NULL,
+                receipt_requested_temp = 0
             WHERE id = ? AND status != 'CANCELLED'
             """,
             (booking_id,),
@@ -691,7 +707,9 @@ def expire_outdated_bookings(now: Optional[datetime] = None) -> int:
             f"""
             UPDATE bookings
             SET status = 'CANCELLED',
-                customer_phone_temp = NULL
+                customer_phone_temp = NULL,
+                customer_email_temp = NULL,
+                receipt_requested_temp = 0
             WHERE status = 'PENDING_PAYMENT'
               AND id IN ({placeholders})
             """,
@@ -889,6 +907,24 @@ def clear_customer_phone_temp(booking_id: int) -> None:
             """
             UPDATE bookings
             SET customer_phone_temp = NULL
+            WHERE id = ?
+            """,
+            (booking_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_receipt_temp_fields(booking_id: int) -> None:
+    """Delete temporary customer receipt fields after successful webhook."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """
+            UPDATE bookings
+            SET customer_email_temp = NULL,
+                receipt_requested_temp = 0
             WHERE id = ?
             """,
             (booking_id,),

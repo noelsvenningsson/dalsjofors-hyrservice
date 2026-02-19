@@ -59,8 +59,9 @@ Use `.env.example` as the source of truth.
 - `SWISH_COMMERCE_CERT_PATH`: path to Swish Commerce client certificate
 - `SWISH_COMMERCE_KEY_PATH`: path to Swish Commerce private key
 - `SWISH_COMMERCE_CALLBACK_URL`: optional explicit callback URL for Swish (`/api/swish/callback` is used by default)
-- `NOTIFY_WEBHOOK_URL`: optional webhook endpoint for booking notifications
-- `NOTIFY_WEBHOOK_SECRET`: optional HMAC secret for webhook signature header
+- `NOTIFY_WEBHOOK_URL`: webhook endpoint för e-postkvitto (Google Apps Script)
+- `NOTIFY_WEBHOOK_SECRET`: delas i webhook-payload som `secret`
+  - Rotera omedelbart om den läckt
 - `TWILIO_ACCOUNT_SID`: Twilio Account SID (optional, used for SMS on PAID)
 - `TWILIO_AUTH_TOKEN`: Twilio Auth Token
 - `TWILIO_FROM_NUMBER`: Twilio sender number in E.164 format
@@ -124,7 +125,12 @@ Recent migrations and behavior updates are auto-applied by `db.init_db()`:
 - Customer number is cleared after successful customer receipt SMS
 - Customer number is also cleared when a booking becomes `CANCELLED` (including expiry cleanup)
 
-5. Ephemeral admin test bookings
+5. E-postkvitto via webhook (Apps Script)
+- `bookings.customer_email_temp` och `bookings.receipt_requested_temp` lagrar kvittoönskemål till betalning är klar
+- Webhook triggas endast vid `PAID`/`CONFIRMED` och bara om `receipt_requested_temp=1` och `customer_email_temp` finns
+- Vid webhook-svar `HTTP 200` med body som innehåller `ok` rensas tempfälten för att undvika spam vid retries
+
+6. Ephemeral admin test bookings
 - Separate `test_bookings` table (never mixed with `bookings`)
 - Test bookings are created as fake `PAID` immediately
 - SMS with receipt fields is sent immediately (idempotent)
@@ -212,6 +218,8 @@ Required inputs (JSON body):
 - `date`
 - `startTime` (required for `TWO_HOURS`)
 - `customerPhone` (optional, Swedish mobile for receipt SMS: `+46...` or `07...`)
+- `receiptRequested` (optional boolean, default `false`)
+- `customerEmail` (optional string; required only when `receiptRequested=true`)
 
 Example success (`201`):
 
@@ -231,6 +239,38 @@ SMS is sent when a booking reaches `swish_status=PAID`:
 - Customer receipt SMS (if optional number was provided): one-time (`sms_customer_sent_at`)
 
 If Twilio env vars are missing, app logs clearly and continues without crashing.
+
+## E-postkvitto via Webhook (Google Apps Script)
+
+När en bokning blir `PAID` skickar backend webhook endast om kunden aktivt begärt kvitto:
+- `receipt_requested_temp = 1`
+- `customer_email_temp` finns
+
+Payload till `NOTIFY_WEBHOOK_URL`:
+
+```json
+{
+  "secret": "...",
+  "receiptRequested": true,
+  "customerEmail": "kund@example.com",
+  "event": "booking.confirmed",
+  "bookingId": 123,
+  "bookingReference": "DHS-20260510-000123",
+  "trailerType": "GALLER",
+  "startDt": "2026-05-10T10:00",
+  "endDt": "2026-05-10T12:00",
+  "price": 200,
+  "swishStatus": "PAID"
+}
+```
+
+Loggar:
+- `WEBHOOK_DISABLED` (saknar `NOTIFY_WEBHOOK_URL`)
+- `WEBHOOK_SEND` (event + bookingReference + maskad e-post)
+- `WEBHOOK_OK` / `WEBHOOK_FAIL` (status + kort fel)
+
+Säkerhet:
+- Rotera `NOTIFY_WEBHOOK_SECRET` direkt om den misstänks ha läckt.
 
 Quick local test:
 
@@ -260,8 +300,8 @@ All commands assume local server at `http://localhost:8000` and `SWISH_MODE=mock
 Create a hold:
 
 ```bash
-BOOKING_ID=$(curl -sS -X POST http://localhost:8000/api/hold \\
-  -H 'Content-Type: application/json' \\
+BOOKING_ID=$(curl -sS -X POST http://localhost:8000/api/hold \
+  -H 'Content-Type: application/json' \
   -d '{"trailerType":"GALLER","rentalType":"TWO_HOURS","date":"2026-02-20","startTime":"10:00"}' | jq -r '.bookingId')
 echo "$BOOKING_ID"
 ```
@@ -269,8 +309,8 @@ echo "$BOOKING_ID"
 Create or reuse payment request (idempotent):
 
 ```bash
-curl -sS -X POST \"http://localhost:8000/api/swish/paymentrequest?bookingId=${BOOKING_ID}\" | jq
-curl -sS -X POST \"http://localhost:8000/api/swish/paymentrequest?bookingId=${BOOKING_ID}\" | jq
+curl -sS -X POST "http://localhost:8000/api/swish/paymentrequest?bookingId=${BOOKING_ID}" | jq
+curl -sS -X POST "http://localhost:8000/api/swish/paymentrequest?bookingId=${BOOKING_ID}" | jq
 ```
 
 Debug existing booking row (example with `bookingId=4`) without enabling noisy logs globally:
@@ -282,20 +322,67 @@ DEBUG_SWISH=1 curl -sS -X POST "http://localhost:8000/api/swish/paymentrequest?b
 Fetch payment status:
 
 ```bash
-curl -sS \"http://localhost:8000/api/payment-status?bookingId=${BOOKING_ID}\" | jq
+curl -sS "http://localhost:8000/api/payment-status?bookingId=${BOOKING_ID}" | jq
 ```
 
 Mark as paid in mock and verify poll endpoint response:
 
 ```bash
-curl -sS -X POST \"http://localhost:8000/api/dev/swish/mark?bookingId=${BOOKING_ID}&status=PAID\" | jq
-curl -sS \"http://localhost:8000/api/payment-status?bookingId=${BOOKING_ID}\" | jq
+curl -sS -X POST "http://localhost:8000/api/dev/swish/mark?bookingId=${BOOKING_ID}&status=PAID" | jq
+curl -sS "http://localhost:8000/api/payment-status?bookingId=${BOOKING_ID}" | jq
 ```
+
+Webhook-kvitto test (med `receiptRequested=true`):
+
+```bash
+BOOKING_ID=$(curl -sS -X POST http://localhost:8000/api/hold \
+  -H 'Content-Type: application/json' \
+  -d '{"trailerType":"GALLER","rentalType":"TWO_HOURS","date":"2026-02-20","startTime":"10:00","receiptRequested":true,"customerEmail":"din.mail@example.com"}' | jq -r '.bookingId')
+
+curl -sS -X POST "http://localhost:8000/api/dev/swish/mark?bookingId=${BOOKING_ID}&status=PAID" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" | jq
+```
+
+Render testflöde:
+
+```bash
+APP_URL="https://<din-render-service>.onrender.com"
+ADMIN_TOKEN="<din-admin-token>"
+
+BOOKING_ID=$(curl -sS -X POST "${APP_URL}/api/hold" \
+  -H 'Content-Type: application/json' \
+  -d '{"trailerType":"GALLER","rentalType":"TWO_HOURS","date":"2026-02-20","startTime":"10:00","receiptRequested":true,"customerEmail":"din.mail@example.com"}' | jq -r '.bookingId')
+
+curl -sS -X POST "${APP_URL}/api/dev/swish/mark?bookingId=${BOOKING_ID}&status=PAID" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" | jq
+```
+
+Render testflöde utan `jq` (minimal bash/WSL):
+
+```bash
+APP_URL="https://<din-render-service>.onrender.com"
+ADMIN_TOKEN="<din-admin-token>"
+
+HOLD_RESP=$(curl -sS -X POST "${APP_URL}/api/hold" \
+  -H 'Content-Type: application/json' \
+  -d '{"trailerType":"GALLER","rentalType":"TWO_HOURS","date":"2026-02-20","startTime":"10:00","receiptRequested":true,"customerEmail":"din.mail@example.com"}')
+echo "${HOLD_RESP}"
+
+BOOKING_ID=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("bookingId",""))' <<< "${HOLD_RESP}")
+echo "bookingId=${BOOKING_ID}"
+
+curl -sS -X POST "${APP_URL}/api/dev/swish/mark?bookingId=${BOOKING_ID}&status=PAID" \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}"
+```
+
+Förväntade loggar i Render:
+- `WEBHOOK_SEND event=booking.confirmed ... customerEmail=n***@...`
+- `WEBHOOK_OK status=200 ...`
 
 QR endpoint should return SVG image when token exists:
 
 ```bash
-curl -sS -I \"http://localhost:8000/api/swish/qr?bookingId=${BOOKING_ID}\"
+curl -sS -I "http://localhost:8000/api/swish/qr?bookingId=${BOOKING_ID}"
 ```
 
 ### `POST /api/admin/blocks`
