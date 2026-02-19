@@ -382,6 +382,64 @@ class Handler(BaseHTTPRequestHandler):
             )
         return False
 
+    def _extract_bearer_token(self) -> Optional[str]:
+        auth_header = (self.headers.get("Authorization") or "").strip()
+        if not auth_header:
+            return None
+        scheme, _, token = auth_header.partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            return ""
+        return token.strip()
+
+    def require_dev_auth(self, *, path: str, raw_query: str) -> bool:
+        params = parse_query(raw_query)
+        booking_id = params.get("bookingId")
+        status = params.get("status")
+        expected_token = get_admin_token()
+        authorized = True
+
+        if expected_token:
+            provided_bearer_token = self._extract_bearer_token()
+            if provided_bearer_token is None:
+                authorized = False
+                logger.warning(
+                    "DEV_ENDPOINT_HIT endpoint=%s bookingId=%s status=%s authorized=no",
+                    path,
+                    booking_id,
+                    status,
+                )
+                self.api_error(
+                    401,
+                    "unauthorized",
+                    "Missing bearer token",
+                    legacy_error="Unauthorized",
+                )
+                return False
+            if not provided_bearer_token or not hmac.compare_digest(provided_bearer_token, expected_token):
+                authorized = False
+                logger.warning(
+                    "DEV_ENDPOINT_HIT endpoint=%s bookingId=%s status=%s authorized=no",
+                    path,
+                    booking_id,
+                    status,
+                )
+                self.api_error(
+                    403,
+                    "forbidden",
+                    "Invalid bearer token",
+                    legacy_error="Forbidden",
+                )
+                return False
+
+        logger.warning(
+            "DEV_ENDPOINT_HIT endpoint=%s bookingId=%s status=%s authorized=%s",
+            path,
+            booking_id,
+            status,
+            "yes" if authorized else "no",
+        )
+        return True
+
     def api_error(
         self,
         status: int,
@@ -497,6 +555,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = parse_query(parsed.query)
+        if path.startswith("/api/dev/"):
+            if not self.require_dev_auth(path=path, raw_query=parsed.query):
+                return
 
         # Expire outdated bookings on each GET request
         try:
@@ -562,6 +623,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = parse_query(parsed.query)
+        if path.startswith("/api/dev/"):
+            if not self.require_dev_auth(path=path, raw_query=parsed.query):
+                return
         if path == "/api/swish/qr":
             return self.handle_swish_qr(query_params, head_only=True)
         self.send_response(404)
@@ -577,6 +641,9 @@ class Handler(BaseHTTPRequestHandler):
         """
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path.startswith("/api/dev/"):
+            if not self.require_dev_auth(path=path, raw_query=parsed.query):
+                return
 
         debug_booking_id: Optional[int] = None
         if _debug_swish_enabled() and path == "/api/swish/paymentrequest":
@@ -670,6 +737,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = parse_query(parsed.query)
+        if path.startswith("/api/dev/"):
+            if not self.require_dev_auth(path=path, raw_query=parsed.query):
+                return
 
         try:
             db.expire_outdated_bookings()
