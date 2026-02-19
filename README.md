@@ -61,6 +61,10 @@ Use `.env.example` as the source of truth.
 - `SWISH_COMMERCE_CALLBACK_URL`: optional explicit callback URL for Swish (`/api/swish/callback` is used by default)
 - `NOTIFY_WEBHOOK_URL`: optional webhook endpoint for booking notifications
 - `NOTIFY_WEBHOOK_SECRET`: optional HMAC secret for webhook signature header
+- `TWILIO_ACCOUNT_SID`: Twilio Account SID (optional, used for SMS on PAID)
+- `TWILIO_AUTH_TOKEN`: Twilio Auth Token
+- `TWILIO_FROM_NUMBER`: Twilio sender number in E.164 format
+- `ADMIN_SMS_NUMBER`: admin mobile (default `0709663485`, normalized internally)
 - `ADMIN_TOKEN`: admin auth token for `/api/dev/*` and `/api/admin/*` (bearer)
   - Required in production
   - Optional in local development (server logs a warning and admin auth is disabled)
@@ -113,6 +117,14 @@ Recent migrations and behavior updates are auto-applied by `db.init_db()`:
 - Expired `PENDING_PAYMENT` bookings are cancelled automatically during request handling
 - Manual cleanup endpoint: `POST /api/admin/expire-pending`
 
+4. Heldag weekday/weekend+holiday pricing and SMS idempotency
+- `config/holidays.py` contains configurable holiday dates (`YYYY-MM-DD`)
+- Heldag: weekday `250`, weekend/holiday `300`
+- `bookings.customer_phone_temp` stores optional customer mobile temporarily
+- `bookings.sms_admin_sent_at` and `bookings.sms_customer_sent_at` enforce one-time SMS dispatch
+- Customer number is cleared after successful customer receipt SMS
+- Customer number is also cleared when a booking becomes `CANCELLED` (including expiry cleanup)
+
 ## API Quick Reference
 
 All responses are JSON.
@@ -153,7 +165,8 @@ Example success (`200`):
 
 ```json
 {
-  "price": 250
+  "price": 250,
+  "dayTypeLabel": "Vardag"
 }
 ```
 
@@ -188,6 +201,7 @@ Required inputs (JSON body):
 - `rentalType`
 - `date`
 - `startTime` (required for `TWO_HOURS`)
+- `customerPhone` (optional, Swedish mobile for receipt SMS: `+46...` or `07...`)
 
 Example success (`201`):
 
@@ -195,9 +209,33 @@ Example success (`201`):
 {
   "bookingId": 123,
   "bookingReference": "DHS-20260510-000123",
+  "createdAt": "2026-05-10T09:15:33",
   "price": 200
 }
 ```
+
+## SMS Provider (Twilio)
+
+SMS is sent when a booking reaches `swish_status=PAID`:
+- Admin SMS: one-time (`sms_admin_sent_at`)
+- Customer receipt SMS (if optional number was provided): one-time (`sms_customer_sent_at`)
+
+If Twilio env vars are missing, app logs clearly and continues without crashing.
+
+Quick local test:
+
+```bash
+python3 -c "import sms_provider; print(sms_provider.send_sms('+46701234567','Test från DHS'))"
+```
+
+## Manual Test Checklist
+
+- Weekday date + heldag -> `250`
+- Saturday/Sunday + heldag -> `300`
+- Date in `config/holidays.py` + heldag -> `300`
+- `PAID` transition -> admin SMS sent exactly once
+- Customer mobile provided -> customer SMS sent; `customer_phone_temp` cleared after success
+- Simulated SMS failure -> retry can send later; no duplicate send after success
 
 Common errors:
 - `400 {"error":"Invalid JSON"}`

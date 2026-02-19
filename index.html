@@ -24,11 +24,23 @@
       <p class="step-intro">Välj vilken typ av släp du vill hyra.</p>
       <div class="trailers">
         <button type="button" data-type="GALLER" class="card" id="card-galler">
-          <h3>Gallersläp</h3>
+          <h3>Galler-släp</h3>
+          <ul class="spec-list">
+            <li>Inv. mått: 258 × 128 × 26 cm</li>
+            <li>Totalvikt: 750 kg</li>
+            <li>Maxlast: 510 kg</li>
+            <li>Bromsad: Ja</li>
+          </ul>
           <p class="availability" id="availability-galler">–/2 lediga</p>
         </button>
         <button type="button" data-type="KAP" class="card" id="card-kap">
           <h3>Kåpsläp</h3>
+          <ul class="spec-list">
+            <li>Inv. mått: 258 × 128 × 140 cm</li>
+            <li>Totalvikt: 1000 kg</li>
+            <li>Maxlast: 690 kg</li>
+            <li>Bromsad: Ja</li>
+          </ul>
           <p class="availability" id="availability-kap">–/2 lediga</p>
         </button>
       </div>
@@ -37,28 +49,33 @@
       </div>
     </section>
 
-    <!-- Steg 2: Välj hyrestid -->
+    <!-- Steg 2: Välj hyrestid -->
     <section id="step2" class="step" hidden>
       <h2>Välj hyrestid</h2>
       <p class="step-intro">Välj om du vill hyra i två timmar eller heldag.</p>
       <div class="rental-options">
         <label>
           <input type="radio" name="rentalType" value="TWO_HOURS">
-          2 timmar (200 kr)
+          2 timmar (200 kr)
         </label>
         <label>
           <input type="radio" name="rentalType" value="FULL_DAY">
-          Heldag (250/300 kr)
+          Heldag
         </label>
       </div>
+      <div class="full-day-pricing">
+        <p>Heldag vardag 250 kr</p>
+        <p>Heldag helg/röd dag 300 kr</p>
+      </div>
       <p id="price-info" class="info"></p>
+      <p id="daytype-badge" class="daytype-badge" hidden></p>
       <div class="actions">
         <button type="button" id="step2-back">Tillbaka</button>
         <button type="button" id="step2-next" disabled>Nästa</button>
       </div>
     </section>
 
-    <!-- Steg 3: Datum och starttid -->
+    <!-- Steg 3: Datum och starttid -->
     <section id="step3" class="step" hidden>
       <h2>Välj datum och tid</h2>
       <p class="step-intro">Ange när uthyrningen ska starta.</p>
@@ -69,6 +86,10 @@
         <label id="time-container" hidden>Tid
           <select id="rental-time"></select>
         </label>
+        <label>Mobilnummer för kvitto (valfritt)
+          <input type="tel" id="customer-phone" placeholder="+4670xxxxxxx eller 07xxxxxxxx">
+        </label>
+        <p class="helper-text">Används bara för bokningskvitto. Ingen reklam.</p>
       </div>
       <p id="availability-info" class="info"></p>
       <div class="actions">
@@ -77,7 +98,7 @@
       </div>
     </section>
 
-    <!-- Steg 4: Sammanfattning -->
+    <!-- Steg 4: Sammanfattning -->
     <section id="step4" class="step" hidden>
       <h2>Sammanfattning</h2>
       <p class="step-intro">Kontrollera uppgifterna. Betalningsförfrågan skapas automatiskt.</p>
@@ -98,10 +119,15 @@
     </section>
 
     <section id="step5" class="step" hidden>
-      <h2>Bekräftelse</h2>
-      <p class="step-intro">Din betalning är registrerad och bokningen är bekräftad.</p>
-      <div id="confirmation" class="summary-list"></div>
-      <p class="lock-code">Kodlåskod: <strong>6392</strong></p>
+      <h2>Bokningskvitto</h2>
+      <p class="step-intro">Kort sammanfattning av din bokning.</p>
+      <div id="confirmation" class="summary-list receipt-list"></div>
+      <div class="receipt-company">
+        <p><strong>Dalsjöfors Hyrservice AB</strong></p>
+        <p>Org.nr: 559062-4556</p>
+        <p>Boråsvägen 58B, 516 34 Dalsjöfors</p>
+        <p>Telefon: 070-457 97 09</p>
+      </div>
     </section>
 
     <!-- Dev‑panel (visas endast med ?dev=1) -->

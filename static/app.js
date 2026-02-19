@@ -11,12 +11,15 @@ document.addEventListener('DOMContentLoaded', () => {
     rentalType: null,
     date: null,
     time: null,
+    customerPhone: null,
     price: null,
+    dayTypeLabel: null,
     available: null,
     remaining: null,
     remainingByType: { GALLER: null, KAP: null },
     bookingId: null,
     bookingReference: null,
+    createdAt: null,
     swishStatus: null,
     pollTimer: null,
   };
@@ -37,12 +40,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const rentalInputs = document.querySelectorAll('input[name="rentalType"]');
   const priceInfo = document.getElementById('price-info');
+  const dayTypeBadge = document.getElementById('daytype-badge');
   const step2Back = document.getElementById('step2-back');
   const step2Next = document.getElementById('step2-next');
 
   const dateInput = document.getElementById('rental-date');
   const timeContainer = document.getElementById('time-container');
   const timeSelect = document.getElementById('rental-time');
+  const customerPhoneInput = document.getElementById('customer-phone');
   const availabilityInfo = document.getElementById('availability-info');
   const step3Back = document.getElementById('step3-back');
   const step3Next = document.getElementById('step3-next');
@@ -69,7 +74,15 @@ document.addEventListener('DOMContentLoaded', () => {
     currentStep = n;
     progressEl.textContent = `Steg ${n} av 5`;
     Object.keys(steps).forEach(key => {
-      steps[key].hidden = Number(key) !== n;
+      const stepNode = steps[key];
+      const isTarget = Number(key) === n;
+      if (isTarget) {
+        stepNode.hidden = false;
+        requestAnimationFrame(() => stepNode.classList.add('is-visible'));
+      } else {
+        stepNode.classList.remove('is-visible');
+        stepNode.hidden = true;
+      }
     });
   }
 
@@ -127,7 +140,16 @@ document.addEventListener('DOMContentLoaded', () => {
         .then(data => {
           if (data && typeof data.price === 'number') {
             state.price = data.price;
-            setInfoState(priceInfo, `Pris: ${data.price} kr`, 'success');
+            state.dayTypeLabel = data.dayTypeLabel || null;
+            const daySuffix = state.dayTypeLabel ? ` (${state.dayTypeLabel})` : '';
+            setInfoState(priceInfo, `Pris: ${data.price} kr${daySuffix}`, 'success');
+            if (state.rentalType === 'FULL_DAY' && state.dayTypeLabel) {
+              dayTypeBadge.hidden = false;
+              dayTypeBadge.textContent = state.dayTypeLabel;
+            } else {
+              dayTypeBadge.hidden = true;
+              dayTypeBadge.textContent = '';
+            }
           } else {
             setInfoState(priceInfo, 'Kunde inte hämta pris', 'error');
           }
@@ -137,9 +159,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     } else {
       if (state.rentalType === 'FULL_DAY') {
-        setInfoState(priceInfo, 'Pris: 250/300 kr beroende på veckodag', null);
+        setInfoState(priceInfo, 'Välj datum för exakt heldagspris', null);
+        dayTypeBadge.hidden = true;
+        dayTypeBadge.textContent = '';
       } else if (state.rentalType === 'TWO_HOURS') {
         setInfoState(priceInfo, 'Pris: 200 kr', null);
+        dayTypeBadge.hidden = true;
+        dayTypeBadge.textContent = '';
       }
     }
   }
@@ -215,7 +241,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateSummary() {
     if (!state.trailerType || !state.rentalType || !state.date) return;
     const pieces = [];
-    pieces.push(`<p><strong>Släp:</strong> ${state.trailerType === 'GALLER' ? 'Gallersläp' : 'Kåpsläp'}</p>`);
+    pieces.push(`<p><strong>Släp:</strong> ${state.trailerType === 'GALLER' ? 'Galler-släp' : 'Kåpsläp'}</p>`);
     pieces.push(`<p><strong>Datum:</strong> ${state.date}</p>`);
     if (state.rentalType === 'TWO_HOURS') {
       pieces.push(`<p><strong>Tid:</strong> ${state.time} - ${calcEndTime(state.time)}</p>`);
@@ -224,7 +250,11 @@ document.addEventListener('DOMContentLoaded', () => {
       pieces.push('<p><strong>Längd:</strong> Heldag</p>');
     }
     if (state.price != null) {
-      pieces.push(`<p><strong>Pris:</strong> ${state.price} kr</p>`);
+      const daySuffix = state.dayTypeLabel ? ` (${state.dayTypeLabel})` : '';
+      pieces.push(`<p><strong>Pris:</strong> ${state.price} kr${daySuffix}</p>`);
+    }
+    if (state.customerPhone) {
+      pieces.push('<p><strong>Mobil för kvitto:</strong> Angivet</p>');
     }
     if (state.bookingReference) {
       pieces.push(`<p><strong>Bokningsreferens:</strong> ${state.bookingReference}</p>`);
@@ -233,23 +263,19 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderConfirmation() {
-    const trailerText = state.trailerType === 'GALLER' ? 'Gallersläp' : 'Kåpsläp';
+    const trailerText = state.trailerType === 'GALLER' ? 'Galler-släp' : 'Kåpsläp';
+    const nowIso = new Date().toISOString().slice(0, 19).replace('T', ' ');
     const rows = [];
-    rows.push(`<p><strong>Boknings-ID:</strong> ${state.bookingId}</p>`);
     if (state.bookingReference) {
-      rows.push(`<p><strong>Bokningsreferens:</strong> ${state.bookingReference}</p>`);
+      rows.push(`<p><strong>Referens:</strong> ${state.bookingReference}</p>`);
     }
+    rows.push(`<p><strong>Datum/tid:</strong> ${state.date}${state.rentalType === 'TWO_HOURS' ? ` ${state.time}-${calcEndTime(state.time)}` : ' Heldag'}</p>`);
     rows.push(`<p><strong>Släp:</strong> ${trailerText}</p>`);
-    rows.push(`<p><strong>Datum:</strong> ${state.date}</p>`);
-    if (state.rentalType === 'TWO_HOURS') {
-      rows.push(`<p><strong>Tid:</strong> ${state.time} - ${calcEndTime(state.time)}</p>`);
-    } else {
-      rows.push('<p><strong>Tid:</strong> Heldag</p>');
-    }
     if (state.price != null) {
       rows.push(`<p><strong>Pris:</strong> ${state.price} kr</p>`);
     }
-    rows.push('<p><strong>Betalning:</strong> Registrerad</p>');
+    rows.push(`<p><strong>Betalstatus:</strong> ${state.swishStatus || 'PAID'}</p>`);
+    rows.push(`<p><strong>Skapad:</strong> ${state.createdAt || nowIso}</p>`);
     confirmationEl.innerHTML = rows.join('');
   }
 
@@ -286,6 +312,7 @@ document.addEventListener('DOMContentLoaded', () => {
       date: state.date,
     };
     if (state.rentalType === 'TWO_HOURS') payload.startTime = state.time;
+    if (state.customerPhone) payload.customerPhone = state.customerPhone;
 
     return fetch('/api/hold', {
       method: 'POST',
@@ -299,6 +326,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         state.bookingId = data.bookingId;
         state.bookingReference = data.bookingReference || null;
+        state.createdAt = data.createdAt || null;
         updateSummary();
         updateDebugInfo();
         return state.bookingId;
@@ -466,6 +494,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   step3Next.addEventListener('click', () => {
+    state.customerPhone = (customerPhoneInput.value || '').trim() || null;
     updateSummary();
     showStep(4);
     startStep4PaymentFlow();

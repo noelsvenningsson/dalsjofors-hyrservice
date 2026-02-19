@@ -115,6 +115,14 @@ main#wizard {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
   padding: 1.2rem;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.step.is-visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .step h2 {
@@ -137,7 +145,7 @@ main#wizard {
 
 .card {
   flex: 1 1 calc(50% - 0.425rem);
-  min-height: 126px;
+  min-height: 180px;
   padding: 1rem 0.95rem;
   border-radius: var(--radius-md);
   border: 1px solid #dce6f0;
@@ -166,9 +174,20 @@ main#wizard {
 }
 
 .availability {
-  margin: 0;
+  margin: 0.45rem 0 0;
   color: #425565;
   font-size: 0.9rem;
+}
+
+.spec-list {
+  margin: 0.2rem 0 0;
+  padding-left: 1rem;
+  color: #415669;
+  font-size: 0.86rem;
+}
+
+.spec-list li {
+  margin: 0.18rem 0;
 }
 
 .rental-options {
@@ -193,6 +212,20 @@ main#wizard {
   accent-color: var(--brand);
 }
 
+.full-day-pricing {
+  margin-top: 0.8rem;
+  border: 1px solid #dce6ef;
+  border-radius: var(--radius-sm);
+  background: #f7fafd;
+  padding: 0.65rem 0.75rem;
+}
+
+.full-day-pricing p {
+  margin: 0.22rem 0;
+  font-size: 0.92rem;
+  color: #344b5e;
+}
+
 .date-time-picker {
   display: grid;
   gap: 0.7rem;
@@ -205,7 +238,8 @@ main#wizard {
 }
 
 select,
-input[type="date"] {
+input[type="date"],
+input[type="tel"] {
   width: 100%;
   min-height: 42px;
   padding: 0.45rem 0.55rem;
@@ -218,6 +252,7 @@ input[type="date"] {
 
 select:focus-visible,
 input[type="date"]:focus-visible,
+input[type="tel"]:focus-visible,
 .actions button:focus-visible,
 .card:focus-visible {
   outline: 3px solid rgba(22, 103, 165, 0.26);
@@ -245,6 +280,24 @@ input[type="date"]:focus-visible,
 
 .info.warning {
   color: var(--warning);
+}
+
+.daytype-badge {
+  display: inline-flex;
+  margin: 0.4rem 0 0;
+  padding: 0.28rem 0.58rem;
+  border-radius: 999px;
+  background: #e8f0f9;
+  border: 1px solid #c9daeb;
+  color: #244564;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.helper-text {
+  margin: -0.1rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
 }
 
 .summary-list p {
@@ -364,6 +417,24 @@ input[type="date"]:focus-visible,
   margin: 1rem 0 0;
   font-size: 1.05rem;
   color: #213243;
+}
+
+.receipt-list p {
+  font-size: 0.95rem;
+}
+
+.receipt-company {
+  margin-top: 0.85rem;
+  border: 1px solid #dce6ef;
+  border-radius: var(--radius-sm);
+  background: #f8fbff;
+  padding: 0.65rem 0.8rem;
+}
+
+.receipt-company p {
+  margin: 0.2rem 0;
+  color: #2d465a;
+  font-size: 0.9rem;
 }
 
 #step2-back:hover:not(:disabled),

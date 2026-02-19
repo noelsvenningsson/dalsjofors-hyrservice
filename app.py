@@ -66,6 +66,7 @@ from typing import Any, Dict, Optional
 
 import db
 import notifications
+import sms_provider
 from qrcodegen import QrCode
 from swish_client import SwishClient, SwishConfig
 
@@ -545,6 +546,60 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return value
 
+    def _validate_optional_customer_phone(self, raw_value: Optional[str]) -> Optional[str]:
+        value = (raw_value or "").strip()
+        if not value:
+            return None
+        normalized = sms_provider.normalize_swedish_mobile(value)
+        if not normalized:
+            self._invalid_field_error({"customerPhone": "Ange svensk mobil: +46xxxxxxxxx eller 07xxxxxxxx"})
+            return None
+        return normalized
+
+    def _trailer_label(self, trailer_type: str) -> str:
+        return "Galler-släp" if trailer_type == "GALLER" else "Kåpsläp"
+
+    def _booking_period_label(self, booking: Dict[str, Any]) -> str:
+        start_dt = booking.get("start_dt") or ""
+        end_dt = booking.get("end_dt") or ""
+        rental_type = (booking.get("rental_type") or "").upper()
+        if rental_type == "FULL_DAY":
+            return start_dt[:10]
+        return f"{start_dt.replace('T', ' ')} - {end_dt.replace('T', ' ')}"
+
+    def _send_paid_sms_notifications(self, booking_id: int) -> None:
+        booking = db.get_booking_by_id(booking_id)
+        if not booking:
+            return
+        swish_status = (booking.get("swish_status") or "").upper()
+        if swish_status != "PAID":
+            return
+
+        booking_ref = booking.get("booking_reference") or f"BOOKING-{booking_id}"
+        trailer_label = self._trailer_label(booking.get("trailer_type") or "")
+        period_label = self._booking_period_label(booking)
+        price_label = f"{booking.get('price')} kr"
+
+        if booking.get("sms_admin_sent_at") is None:
+            admin_number = sms_provider.get_admin_sms_number_e164()
+            if admin_number:
+                admin_message = (
+                    f"Ny bokning PAID: {booking_ref} | {trailer_label} | {period_label} | {price_label}"
+                )
+                if sms_provider.send_sms(admin_number, admin_message):
+                    db.mark_sms_admin_sent(booking_id)
+
+        booking = db.get_booking_by_id(booking_id) or booking
+        customer_phone = booking.get("customer_phone_temp")
+        if customer_phone and booking.get("sms_customer_sent_at") is None:
+            customer_message = (
+                f"Dalsjofors Hyrservice: Bokningskvitto: {booking_ref} | {trailer_label} | "
+                f"{period_label} | {price_label} | Betalning: PAID"
+            )
+            if sms_provider.send_sms(customer_phone, customer_message):
+                db.mark_sms_customer_sent(booking_id)
+                db.clear_customer_phone_temp(booking_id)
+
     def _parse_iso_datetime_field(self, field_name: str, raw_value: Optional[str]) -> Optional[datetime]:
         value = (raw_value or "").strip()
         if not value:
@@ -811,7 +866,16 @@ class Handler(BaseHTTPRequestHandler):
             price = db.calculate_price(dt, rental_type_u, trailer_type_u)
         except ValueError as e:
             return self.api_error(400, "invalid_request", str(e), legacy_error=str(e))
-        return self.end_json(200, {"price": price})
+        day_type_label: Optional[str] = None
+        if rental_type_u == "FULL_DAY":
+            day_type_label = "Helg/röd dag" if db.full_day_rate_label(dt) == "HELG_OR_ROD_DAG" else "Vardag"
+        return self.end_json(
+            200,
+            {
+                "price": price,
+                "dayTypeLabel": day_type_label,
+            },
+        )
 
     def handle_availability(self, params: Dict[str, str]) -> None:
         trailer_type_u = self._validate_trailer_type(params.get("trailerType"))
@@ -1035,6 +1099,8 @@ class Handler(BaseHTTPRequestHandler):
                 booking_status="CONFIRMED",
                 updated_at=datetime.now().isoformat(timespec="seconds"),
             )
+        if swish_status == "PAID":
+            self._send_paid_sms_notifications(booking_id)
 
         return self.end_json(200, {"bookingId": booking_id, "swishStatus": swish_status})
 
@@ -1066,6 +1132,8 @@ class Handler(BaseHTTPRequestHandler):
             booking_status=booking_status,
             updated_at=datetime.now().isoformat(timespec="seconds"),
         )
+        if target_status == "PAID":
+            self._send_paid_sms_notifications(booking_id)
         return self.end_json(200, {"bookingId": booking_id, "swishStatus": target_status, "bookingStatus": booking_status})
 
     def handle_swish_qr(self, params: Dict[str, str], *, head_only: bool = False) -> None:
@@ -1260,6 +1328,9 @@ class Handler(BaseHTTPRequestHandler):
         trailer_type_u = self._validate_trailer_type(data.get("trailerType"))
         rental_type_u = self._validate_rental_type(data.get("rentalType"))
         date_str = self._validate_date(data.get("date"))
+        customer_phone = self._validate_optional_customer_phone(data.get("customerPhone"))
+        if data.get("customerPhone") and customer_phone is None:
+            return
         if trailer_type_u is None or rental_type_u is None or date_str is None:
             return
 
@@ -1275,7 +1346,7 @@ class Handler(BaseHTTPRequestHandler):
         # Create booking hold using existing logic
         try:
             booking_id, price = db.create_booking(
-                trailer_type_u, rental_type_u, start_dt, end_dt
+                trailer_type_u, rental_type_u, start_dt, end_dt, customer_phone_temp=customer_phone
             )
         except db.SlotBlockedError as block_err:
             block = block_err.block
@@ -1321,6 +1392,7 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "bookingId": booking_id,
                 "bookingReference": booking.get("booking_reference") if booking else None,
+                "createdAt": booking.get("created_at") if booking else None,
                 "price": price,
             },
         )
@@ -1370,6 +1442,7 @@ class Handler(BaseHTTPRequestHandler):
                         "notification dispatch failed event=booking.confirmed booking_id=%s",
                         booking_id,
                     )
+            self._send_paid_sms_notifications(booking_id)
         elif status in {"FAILED", "CANCELLED", "EXPIRED", "ERROR"}:
             db.set_swish_status(booking_id, "FAILED", booking_status="CANCELLED")
         else:
@@ -1647,7 +1720,7 @@ class Handler(BaseHTTPRequestHandler):
         if not booking:
             return self.end_json(404, {"error": "Booking not found"})
         # Build summary lines
-        trailer_text = "Gallersläp" if booking["trailer_type"] == "GALLER" else "Kåpsläp"
+        trailer_text = self._trailer_label(booking["trailer_type"])
         rental_text = "2 timmar" if booking["rental_type"] == "TWO_HOURS" else "Heldag"
         start_date = booking["start_dt"][:10]
         start_time = booking["start_dt"][11:]
@@ -1661,6 +1734,8 @@ class Handler(BaseHTTPRequestHandler):
             f"Slut (end exclusive): {end_time}",
             f"Typ: {rental_text}",
             f"Pris: {booking['price']} kr",
+            f"Betalstatus: {(booking.get('swish_status') or 'PENDING').upper()}",
+            f"Skapad: {booking.get('created_at') or '-'}",
             f"Swish-nummer: 1234 945580",
             f"Kodlåskod: 6392",
         ]
@@ -1760,12 +1835,12 @@ class Handler(BaseHTTPRequestHandler):
     footer p {{ margin: 6px 0; }}
   </style>
 </head><body>
-<header><h1>Bokning bekräftad</h1></header>
+<header><h1>Bokningskvitto</h1></header>
 <main>
   <div class=\"progress\">Steg 5 av 5: Bekräftelse</div>
   <div class=\"card\">
-    <div class=\"status\">Betalning registrerad</div>
-    <h2>Bekräftelseuppgifter</h2>
+    <div class=\"status\">Betalstatus: {(booking.get("swish_status") or "PENDING").upper()}</div>
+    <h2>Kvitto</h2>
     <textarea readonly id=\"confirm-text\">{confirm_text}</textarea>
     <button type=\"button\" id=\"copy-confirm\">Kopiera text</button>
     <p class=\"code-note\">Kodlåskod: <strong>6392</strong></p>

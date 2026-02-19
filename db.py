@@ -43,11 +43,16 @@ from datetime import datetime, date, time, timedelta
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from config.holidays import is_weekend_or_holiday
+
 DB_PATH = Path(__file__).resolve().parent / "database.db"
 PENDING_PAYMENT_EXPIRATION_MINUTES = 15
 TRAILERS_PER_TYPE = 2
 SWISH_PENDING_STATUSES = {"PENDING", "CREATED"}
 SWISH_FAILED_STATUSES = {"FAILED", "CANCELLED", "ERROR", "EXPIRED"}
+TWO_HOURS_PRICE = 200
+FULL_DAY_WEEKDAY_PRICE = 250
+FULL_DAY_WEEKEND_OR_HOLIDAY_PRICE = 300
 logger = logging.getLogger(__name__)
 
 
@@ -69,6 +74,9 @@ def _ensure_swish_columns(conn):
         ("swish_status", "TEXT"),
         ("swish_created_at", "TEXT"),
         ("swish_updated_at", "TEXT"),
+        ("customer_phone_temp", "TEXT"),
+        ("sms_admin_sent_at", "TEXT"),
+        ("sms_customer_sent_at", "TEXT"),
     ]
     cur = conn.cursor()
     for name, typ in cols:
@@ -109,7 +117,10 @@ def init_db() -> None:
             swish_request_id  TEXT,
             swish_status      TEXT,
             swish_created_at  TEXT,
-            swish_updated_at  TEXT
+            swish_updated_at  TEXT,
+            customer_phone_temp TEXT,
+            sms_admin_sent_at TEXT,
+            sms_customer_sent_at TEXT
         );
         """
     )
@@ -209,16 +220,20 @@ def calculate_price(start_datetime: datetime, rental_type: str, trailer_type: st
     if trailer_type not in VALID_TRAILER_TYPES:
         raise ValueError(f"Unknown trailer type: {trailer_type}")
     if rental_type == "TWO_HOURS":
-        return 200
+        return TWO_HOURS_PRICE
     if rental_type != "FULL_DAY":
         raise ValueError(f"Unknown rental type: {rental_type}")
 
-    # Monday = 1, Sunday = 7
-    weekday = start_datetime.isoweekday()
-    if 1 <= weekday <= 4:
-        return 250
-    else:
-        return 300
+    if is_weekend_or_holiday(start_datetime.date()):
+        return FULL_DAY_WEEKEND_OR_HOLIDAY_PRICE
+    return FULL_DAY_WEEKDAY_PRICE
+
+
+def full_day_rate_label(start_datetime: datetime) -> str:
+    """Return ``VARDAG`` or ``HELG_OR_ROD_DAG`` for heldag pricing."""
+    if is_weekend_or_holiday(start_datetime.date()):
+        return "HELG_OR_ROD_DAG"
+    return "VARDAG"
 
 
 def _parse_iso(dt_str: str) -> datetime:
@@ -374,6 +389,7 @@ def create_booking(
     rental_type: str,
     start_datetime: datetime,
     end_datetime: datetime,
+    customer_phone_temp: Optional[str] = None,
 ) -> Tuple[int, int]:
     """Attempt to create a new booking and return its ID and price.
 
@@ -447,10 +463,11 @@ def create_booking(
         conn.execute(
             """
             UPDATE bookings
-            SET booking_reference = ?
+            SET booking_reference = ?,
+                customer_phone_temp = ?
             WHERE id = ?
             """,
-            (booking_reference, booking_id),
+            (booking_reference, customer_phone_temp, booking_id),
         )
         conn.execute("COMMIT")
         return booking_id, price
@@ -584,7 +601,8 @@ def cancel_booking(booking_id: int) -> None:
         conn.execute(
             """
             UPDATE bookings
-            SET status = 'CANCELLED'
+            SET status = 'CANCELLED',
+                customer_phone_temp = NULL
             WHERE id = ? AND status != 'CANCELLED'
             """,
             (booking_id,),
@@ -646,7 +664,8 @@ def expire_outdated_bookings(now: Optional[datetime] = None) -> int:
         cur = conn.execute(
             f"""
             UPDATE bookings
-            SET status = 'CANCELLED'
+            SET status = 'CANCELLED',
+                customer_phone_temp = NULL
             WHERE status = 'PENDING_PAYMENT'
               AND id IN ({placeholders})
             """,
@@ -758,16 +777,29 @@ def set_swish_status(
     conn = sqlite3.connect(DB_PATH)
     try:
         if booking_status:
-            conn.execute(
-                """
-                UPDATE bookings
-                SET swish_status = ?,
-                    swish_updated_at = ?,
-                    status = ?
-                WHERE id = ?
-                """,
-                (swish_status, effective_updated_at, booking_status, booking_id),
-            )
+            if booking_status.upper() == "CANCELLED":
+                conn.execute(
+                    """
+                    UPDATE bookings
+                    SET swish_status = ?,
+                        swish_updated_at = ?,
+                        status = ?,
+                        customer_phone_temp = NULL
+                    WHERE id = ?
+                    """,
+                    (swish_status, effective_updated_at, booking_status, booking_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE bookings
+                    SET swish_status = ?,
+                        swish_updated_at = ?,
+                        status = ?
+                    WHERE id = ?
+                    """,
+                    (swish_status, effective_updated_at, booking_status, booking_id),
+                )
         else:
             conn.execute(
                 """
@@ -778,6 +810,63 @@ def set_swish_status(
                 """,
                 (swish_status, effective_updated_at, booking_id),
             )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_sms_admin_sent(booking_id: int, *, sent_at: Optional[str] = None) -> bool:
+    """Mark admin SMS as sent, only once."""
+    effective_sent_at = sent_at or datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE bookings
+            SET sms_admin_sent_at = ?
+            WHERE id = ?
+              AND sms_admin_sent_at IS NULL
+            """,
+            (effective_sent_at, booking_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_sms_customer_sent(booking_id: int, *, sent_at: Optional[str] = None) -> bool:
+    """Mark customer SMS as sent, only once."""
+    effective_sent_at = sent_at or datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE bookings
+            SET sms_customer_sent_at = ?
+            WHERE id = ?
+              AND sms_customer_sent_at IS NULL
+            """,
+            (effective_sent_at, booking_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def clear_customer_phone_temp(booking_id: int) -> None:
+    """Delete temporary customer phone number (GDPR minimization)."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """
+            UPDATE bookings
+            SET customer_phone_temp = NULL
+            WHERE id = ?
+            """,
+            (booking_id,),
+        )
         conn.commit()
     finally:
         conn.close()

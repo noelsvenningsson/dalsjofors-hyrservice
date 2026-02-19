@@ -58,6 +58,15 @@ class PriceApiTest(unittest.TestCase):
                 actual_price = self._get_price(trailer_type, rental_type, "2026-02-09")
                 self.assertEqual(actual_price, expected_price)
 
+    def test_full_day_weekend_and_holiday_price(self) -> None:
+        # Saturday should be weekend pricing.
+        saturday_price = self._get_price("GALLER", "FULL_DAY", "2026-02-14")
+        self.assertEqual(saturday_price, 300)
+
+        # 2026-01-01 exists in config/holidays.py and should be holiday pricing.
+        holiday_price = self._get_price("KAP", "FULL_DAY", "2026-01-01")
+        self.assertEqual(holiday_price, 300)
+
 
 if __name__ == "__main__":
     unittest.main()
