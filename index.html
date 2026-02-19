@@ -26,22 +26,22 @@
         <button type="button" data-type="GALLER" class="card" id="card-galler">
           <h3>Galler-släp</h3>
           <ul class="spec-list">
-            <li>Inv. mått: 258 × 128 × 26 cm</li>
+            <li>Inv. mått: L: 258 cm · H: 107 cm · B: 128 cm</li>
             <li>Totalvikt: 750 kg</li>
             <li>Maxlast: 510 kg</li>
             <li>Bromsad: Ja</li>
           </ul>
-          <p class="availability" id="availability-galler">–/2 lediga</p>
+          <p class="availability" id="availability-galler">2 Tillgängliga</p>
         </button>
         <button type="button" data-type="KAP" class="card" id="card-kap">
           <h3>Kåpsläp</h3>
           <ul class="spec-list">
-            <li>Inv. mått: 258 × 128 × 140 cm</li>
+            <li>Inv. mått: L: 258 cm · H: 140 cm · B: 128 cm</li>
             <li>Totalvikt: 1000 kg</li>
             <li>Maxlast: 690 kg</li>
             <li>Bromsad: Ja</li>
           </ul>
-          <p class="availability" id="availability-kap">–/2 lediga</p>
+          <p class="availability" id="availability-kap">2 Tillgängliga</p>
         </button>
       </div>
       <div class="actions">
@@ -68,6 +68,7 @@
         <p>Heldag helg/röd dag 300 kr</p>
       </div>
       <p id="price-info" class="info"></p>
+      <!-- Shows computed day type (vardag/helg/röd dag) so users understand heldagspris. -->
       <p id="daytype-badge" class="daytype-badge" hidden></p>
       <div class="actions">
         <button type="button" id="step2-back">Tillbaka</button>
@@ -86,8 +87,8 @@
         <label id="time-container" hidden>Tid
           <select id="rental-time"></select>
         </label>
-        <label>Mobilnummer för kvitto (valfritt)
-          <input type="tel" id="customer-phone" placeholder="+4670xxxxxxx eller 07xxxxxxxx">
+        <label>Mailadress för kvitto (valfritt)
+          <input type="email" id="customer-email" placeholder="namn@exempel.se" autocomplete="email">
         </label>
         <p class="helper-text">Används bara för bokningskvitto. Ingen reklam.</p>
       </div>

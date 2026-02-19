@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
     rentalType: null,
     date: null,
     time: null,
-    customerPhone: null,
+    customerEmail: null,
     price: null,
     dayTypeLabel: null,
     available: null,
@@ -47,7 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const dateInput = document.getElementById('rental-date');
   const timeContainer = document.getElementById('time-container');
   const timeSelect = document.getElementById('rental-time');
-  const customerPhoneInput = document.getElementById('customer-phone');
+  const customerEmailInput = document.getElementById('customer-email');
   const availabilityInfo = document.getElementById('availability-info');
   const step3Back = document.getElementById('step3-back');
   const step3Next = document.getElementById('step3-next');
@@ -68,6 +68,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const devBookBtn = document.getElementById('dev-book');
   if (devMode) {
     devPanel.hidden = false;
+  }
+
+  function formatAvailableCount(remaining) {
+    if (typeof remaining !== 'number') {
+      return '';
+    }
+    if (remaining <= 0) {
+      return 'Fullbokat';
+    }
+    return `${remaining} ${remaining === 1 ? 'Tillgänglig' : 'Tillgängliga'}`;
   }
 
   function showStep(n) {
@@ -192,8 +202,9 @@ document.addEventListener('DOMContentLoaded', () => {
       setInfoState(availabilityInfo, '', null);
       return;
     }
-    if (state.available) {
-      setInfoState(availabilityInfo, `${state.remaining} av 2 lediga`, 'success');
+    const availableText = formatAvailableCount(state.remaining);
+    if (state.available && availableText !== 'Fullbokat') {
+      setInfoState(availabilityInfo, availableText, 'success');
     } else {
       setInfoState(availabilityInfo, 'Fullbokat', 'error');
     }
@@ -213,7 +224,7 @@ document.addEventListener('DOMContentLoaded', () => {
           state.remainingByType[type] = data.remaining;
           const el = document.getElementById(`availability-${type.toLowerCase()}`);
           if (el) {
-            el.textContent = `${data.remaining}/2 lediga`;
+            el.textContent = formatAvailableCount(data.remaining);
           }
           if (state.trailerType === type) {
             state.available = data.available;
@@ -253,8 +264,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const daySuffix = state.dayTypeLabel ? ` (${state.dayTypeLabel})` : '';
       pieces.push(`<p><strong>Pris:</strong> ${state.price} kr${daySuffix}</p>`);
     }
-    if (state.customerPhone) {
-      pieces.push('<p><strong>Mobil för kvitto:</strong> Angivet</p>');
+    if (state.customerEmail) {
+      pieces.push('<p><strong>Mail för kvitto:</strong> Angivet</p>');
     }
     if (state.bookingReference) {
       pieces.push(`<p><strong>Bokningsreferens:</strong> ${state.bookingReference}</p>`);
@@ -312,8 +323,6 @@ document.addEventListener('DOMContentLoaded', () => {
       date: state.date,
     };
     if (state.rentalType === 'TWO_HOURS') payload.startTime = state.time;
-    if (state.customerPhone) payload.customerPhone = state.customerPhone;
-
     return fetch('/api/hold', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -494,7 +503,17 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   step3Next.addEventListener('click', () => {
-    state.customerPhone = (customerPhoneInput.value || '').trim() || null;
+    const customerEmail = (customerEmailInput.value || '').trim().toLowerCase();
+    if (customerEmail && !customerEmailInput.checkValidity()) {
+      customerEmailInput.reportValidity();
+      return;
+    }
+    state.customerEmail = customerEmail || null;
+    if (state.customerEmail) {
+      localStorage.setItem('customerEmail', state.customerEmail);
+    } else {
+      localStorage.removeItem('customerEmail');
+    }
     updateSummary();
     showStep(4);
     startStep4PaymentFlow();
@@ -511,6 +530,12 @@ document.addEventListener('DOMContentLoaded', () => {
       retryPayment.hidden = false;
     });
   });
+
+  const storedCustomerEmail = localStorage.getItem('customerEmail');
+  if (storedCustomerEmail) {
+    state.customerEmail = storedCustomerEmail;
+    customerEmailInput.value = storedCustomerEmail;
+  }
 
   devBookBtn.addEventListener('click', () => {
     if (!state.trailerType || !state.rentalType || !state.date) {
