@@ -1,7 +1,7 @@
 import json
 import threading
 import unittest
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.error import HTTPError
@@ -135,6 +135,70 @@ class NotificationsTest(unittest.TestCase):
         self.assertEqual(len(recorder.confirmed_calls), 1)
         self.assertEqual(recorder.confirmed_calls[0].get("id"), booking_id)
         self.assertEqual(recorder.confirmed_calls[0].get("status"), "CONFIRMED")
+
+
+class RedirectPreservingPostTest(unittest.TestCase):
+    def _run_redirect_server_test(self, final_status: int, final_body: str) -> tuple[int, str, list[tuple[str, str]]]:
+        requests_seen: list[tuple[str, str]] = []
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args) -> None:  # type: ignore[override]
+                return
+
+            def do_POST(self) -> None:  # noqa: N802
+                content_length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(content_length).decode("utf-8")
+                requests_seen.append((self.path, body))
+
+                if self.path == "/start":
+                    self.send_response(302)
+                    self.send_header("Location", "/final")
+                    self.end_headers()
+                    self.wfile.write(b"redirect")
+                    return
+                if self.path == "/final":
+                    self.send_response(final_status)
+                    self.end_headers()
+                    self.wfile.write(final_body.encode("utf-8"))
+                    return
+
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"not found")
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/start"
+            status, body = notifications._post_json_with_redirect_preserving_post(
+                url,
+                {"hello": "world"},
+                timeout_seconds=2,
+                max_redirects=2,
+            )
+            return status, body, requests_seen
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_post_redirect_preserving_post_success(self) -> None:
+        status, body, requests_seen = self._run_redirect_server_test(200, "ok")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, "ok")
+        self.assertEqual(len(requests_seen), 2)
+        self.assertEqual(requests_seen[0][0], "/start")
+        self.assertEqual(requests_seen[1][0], "/final")
+        self.assertEqual(requests_seen[0][1], requests_seen[1][1])
+
+    def test_post_redirect_preserving_post_final_405(self) -> None:
+        status, body, requests_seen = self._run_redirect_server_test(405, "method not allowed")
+        self.assertEqual(status, 405)
+        self.assertIn("method not allowed", body)
+        self.assertEqual(len(requests_seen), 2)
+        self.assertEqual(requests_seen[0][0], "/start")
+        self.assertEqual(requests_seen[1][0], "/final")
 
 
 if __name__ == "__main__":
