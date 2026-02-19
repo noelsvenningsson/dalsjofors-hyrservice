@@ -1,3 +1,4 @@
+import http.client
 import json
 import os
 import threading
@@ -20,8 +21,14 @@ class AdminDashboardApiTest(unittest.TestCase):
         cls._tmpdir = TemporaryDirectory()
         cls._original_db_path = db.DB_PATH
         cls._original_admin_token = os.environ.get("ADMIN_TOKEN")
+        cls._original_admin_password = os.environ.get("ADMIN_PASSWORD")
+        cls._original_session_secret = os.environ.get("ADMIN_SESSION_SECRET")
         cls._admin_token = "test-admin-token"
+        cls._admin_password = "test-admin-password"
+        cls._session_secret = "test-admin-session-secret"
         os.environ["ADMIN_TOKEN"] = cls._admin_token
+        os.environ["ADMIN_PASSWORD"] = cls._admin_password
+        os.environ["ADMIN_SESSION_SECRET"] = cls._session_secret
         db.DB_PATH = Path(cls._tmpdir.name) / "test_database.db"
         db.init_db()
 
@@ -39,6 +46,14 @@ class AdminDashboardApiTest(unittest.TestCase):
             os.environ.pop("ADMIN_TOKEN", None)
         else:
             os.environ["ADMIN_TOKEN"] = cls._original_admin_token
+        if cls._original_admin_password is None:
+            os.environ.pop("ADMIN_PASSWORD", None)
+        else:
+            os.environ["ADMIN_PASSWORD"] = cls._original_admin_password
+        if cls._original_session_secret is None:
+            os.environ.pop("ADMIN_SESSION_SECRET", None)
+        else:
+            os.environ["ADMIN_SESSION_SECRET"] = cls._original_session_secret
         db.DB_PATH = cls._original_db_path
         cls._tmpdir.cleanup()
 
@@ -48,9 +63,9 @@ class AdminDashboardApiTest(unittest.TestCase):
             url = f"{url}?{urlencode(params)}"
         headers = {}
         if admin_token == "use-default":
-            headers["X-Admin-Token"] = self._admin_token
+            headers["Authorization"] = f"Bearer {self._admin_token}"
         elif admin_token:
-            headers["X-Admin-Token"] = admin_token
+            headers["Authorization"] = f"Bearer {admin_token}"
         request = Request(url, headers=headers)
         try:
             with urlopen(request) as response:
@@ -59,7 +74,26 @@ class AdminDashboardApiTest(unittest.TestCase):
             body = err.read().decode("utf-8")
             return err.code, json.loads(body)
 
-    def test_admin_page_without_token_redirects_to_login(self) -> None:
+    def _login_cookie(self) -> str:
+        payload = urlencode({"password": self._admin_password})
+        conn = http.client.HTTPConnection("127.0.0.1", self._server.server_port, timeout=5)
+        conn.request(
+            "POST",
+            "/admin/login",
+            body=payload.encode("utf-8"),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        response = conn.getresponse()
+        status = response.status
+        headers = response.headers
+        response.read()
+        conn.close()
+        self.assertEqual(status, 303)
+        cookie = headers.get("Set-Cookie")
+        self.assertIsNotNone(cookie)
+        return (cookie or "").split(";", 1)[0]
+
+    def test_admin_page_without_session_redirects_to_login(self) -> None:
         with urlopen(f"{self._base_url}/admin") as response:
             self.assertEqual(response.status, 200)
             html = response.read().decode("utf-8")
@@ -67,10 +101,8 @@ class AdminDashboardApiTest(unittest.TestCase):
         self.assertIn("Logga in", html)
 
     def test_admin_page_serves_html(self) -> None:
-        request = Request(
-            f"{self._base_url}/admin",
-            headers={"X-Admin-Token": self._admin_token},
-        )
+        cookie = self._login_cookie()
+        request = Request(f"{self._base_url}/admin", headers={"Cookie": cookie})
         with urlopen(request) as response:
             self.assertEqual(response.status, 200)
             html = response.read().decode("utf-8")

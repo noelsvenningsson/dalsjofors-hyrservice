@@ -55,7 +55,7 @@ class ApiValidationHardeningTest(unittest.TestCase):
     def _post_json(self, path: str, payload: dict) -> tuple[int, dict]:
         headers = {"Content-Type": "application/json"}
         if path.startswith("/api/admin/"):
-            headers["X-Admin-Token"] = self._admin_token
+            headers["Authorization"] = f"Bearer {self._admin_token}"
         request = Request(
             f"{self._base_url}{path}",
             data=json.dumps(payload).encode("utf-8"),

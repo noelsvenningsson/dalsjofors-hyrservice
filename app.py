@@ -79,6 +79,7 @@ NOTIFIER = notifications.create_notification_service_from_env()
 _ADMIN_TOKEN_WARNING_EMITTED = False
 ADMIN_SESSION_COOKIE_NAME = "admin_session"
 ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
+ADMIN_LOGIN_FAILURE_DELAY_SECONDS = 0.3
 
 
 def _debug_swish_enabled() -> bool:
@@ -113,8 +114,18 @@ def get_admin_token() -> str:
     return (os.environ.get("ADMIN_TOKEN") or "").strip()
 
 
+def get_admin_password() -> str:
+    return (os.environ.get("ADMIN_PASSWORD") or "").strip()
+
+
 def get_admin_session_secret() -> str:
     return (os.environ.get("ADMIN_SESSION_SECRET") or "").strip()
+
+
+def _constant_time_secret_match(provided_value: str, expected_value: str) -> bool:
+    provided_hash = hashlib.sha256(provided_value.encode("utf-8")).digest()
+    expected_hash = hashlib.sha256(expected_value.encode("utf-8")).digest()
+    return hmac.compare_digest(provided_hash, expected_hash)
 
 
 def _warn_admin_auth_disabled_once() -> None:
@@ -124,8 +135,8 @@ def _warn_admin_auth_disabled_once() -> None:
         return
     _ADMIN_TOKEN_WARNING_EMITTED = True
     logger.warning(
-        "ADMIN_TOKEN is not set; admin auth is disabled for local development. "
-        "Set ADMIN_TOKEN to protect /admin and /api/admin/* routes."
+        "ADMIN_TOKEN is not set; API admin/dev auth is disabled for local development. "
+        "Set ADMIN_TOKEN to protect /api/dev/* and /api/admin/* routes."
     )
 
 
@@ -183,13 +194,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", set_cookie)
         self.end_headers()
 
-    def _admin_session_cookie_value(self, expected_token: str) -> Optional[str]:
+    def _admin_session_cookie_value(self, expected_password: str) -> Optional[str]:
         secret = get_admin_session_secret()
         if not secret:
             return None
         expires_at = int(time.time()) + ADMIN_SESSION_MAX_AGE_SECONDS
-        token_hash = hashlib.sha256(expected_token.encode("utf-8")).hexdigest()
-        payload = f"v1|{expires_at}|{token_hash}"
+        password_hash = hashlib.sha256(expected_password.encode("utf-8")).hexdigest()
+        payload = f"v1|{expires_at}|{password_hash}"
         signature = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
         payload_b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
         return f"{payload_b64}.{signature}"
@@ -218,7 +229,7 @@ class Handler(BaseHTTPRequestHandler):
             parts.append("Secure")
         return "; ".join(parts)
 
-    def _has_valid_admin_session_cookie(self, expected_token: str) -> bool:
+    def _has_valid_admin_session_cookie(self, expected_password: str) -> bool:
         secret = get_admin_session_secret()
         if not secret:
             return False
@@ -256,8 +267,8 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if int(time.time()) > expires_at:
             return False
-        expected_token_hash = hashlib.sha256(expected_token.encode("utf-8")).hexdigest()
-        return hmac.compare_digest(parts[2], expected_token_hash)
+        expected_password_hash = hashlib.sha256(expected_password.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(parts[2], expected_password_hash)
 
     def _admin_login_html(self, *, error_message: Optional[str] = None) -> bytes:
         escaped_error = html_lib.escape(error_message) if error_message else ""
@@ -280,11 +291,11 @@ class Handler(BaseHTTPRequestHandler):
 <main>
   <div class="card">
     <h1>Admin</h1>
-    <p>Logga in med din admin-token för att öppna adminpanelen i webbläsaren.</p>
+    <p>Logga in med admin-lösenordet för att öppna adminpanelen i webbläsaren.</p>
     {error_block}
     <form method="post" action="/admin/login">
-      <label for="token">Admin-token</label>
-      <input id="token" name="token" type="password" autocomplete="current-password" required />
+      <label for="password">Admin-lösenord</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required />
       <button type="submit">Logga in</button>
     </form>
   </div>
@@ -294,12 +305,13 @@ class Handler(BaseHTTPRequestHandler):
         return page.encode("utf-8")
 
     def handle_admin_login_get(self) -> None:
-        expected_token = get_admin_token()
-        if not expected_token:
-            if is_production_environment():
-                return self.end_html_message(500, "Server Misconfigured", "ADMIN_TOKEN is required in production.")
-            _warn_admin_auth_disabled_once()
-            return self._send_redirect("/admin")
+        expected_password = get_admin_password()
+        if not expected_password:
+            return self.end_html_message(
+                500,
+                "Server Misconfigured",
+                "ADMIN_PASSWORD is required for admin browser login.",
+            )
         body = self._admin_login_html()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -309,13 +321,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def handle_admin_login_post(self) -> None:
-        expected_token = get_admin_token()
-        if not expected_token:
-            if is_production_environment():
-                return self.end_html_message(500, "Server Misconfigured", "ADMIN_TOKEN is required in production.")
-            _warn_admin_auth_disabled_once()
-            return self._send_redirect("/admin")
-        session_value = self._admin_session_cookie_value(expected_token)
+        expected_password = get_admin_password()
+        if not expected_password:
+            return self.end_html_message(
+                500,
+                "Server Misconfigured",
+                "ADMIN_PASSWORD is required for admin browser login.",
+            )
+        session_value = self._admin_session_cookie_value(expected_password)
         if not session_value:
             return self.end_html_message(
                 500,
@@ -328,9 +341,10 @@ class Handler(BaseHTTPRequestHandler):
             content_length = 0
         raw = self.rfile.read(content_length) if content_length > 0 else b""
         form = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
-        provided_token = (form.get("token", [""])[0] or "").strip()
-        if not hmac.compare_digest(provided_token, expected_token):
-            body = self._admin_login_html(error_message="Fel token. Försök igen.")
+        provided_password = form.get("password", [""])[0] or ""
+        if not _constant_time_secret_match(provided_password, expected_password):
+            time.sleep(ADMIN_LOGIN_FAILURE_DELAY_SECONDS)
+            body = self._admin_login_html(error_message="Fel lösenord. Försök igen.")
             self.send_response(401)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -344,42 +358,52 @@ class Handler(BaseHTTPRequestHandler):
     def handle_admin_logout_post(self) -> None:
         return self._send_redirect("/admin/login", set_cookie=self._clear_admin_session_cookie_header())
 
-    def require_admin_auth(self, *, html: bool) -> bool:
+    def require_admin_page_auth(self) -> bool:
+        expected_password = get_admin_password()
+        if not expected_password:
+            if is_production_environment():
+                self.end_html_message(
+                    500,
+                    "Server Misconfigured",
+                    "ADMIN_PASSWORD is required in production.",
+                )
+                return False
+            self.end_html_message(
+                500,
+                "Server Misconfigured",
+                "ADMIN_PASSWORD is required for admin browser login.",
+            )
+            return False
+
+        if self._has_valid_admin_session_cookie(expected_password):
+            return True
+
+        self._send_redirect("/admin/login")
+        return False
+
+    def require_admin_api_auth(self) -> bool:
         expected_token = get_admin_token()
         if not expected_token:
             if is_production_environment():
-                if html:
-                    self.end_html_message(
-                        500,
-                        "Server Misconfigured",
-                        "ADMIN_TOKEN is required in production.",
-                    )
-                else:
-                    self.api_error(
-                        500,
-                        "server_misconfigured",
-                        "Server misconfigured",
-                        legacy_error="Server misconfigured",
-                    )
+                self.api_error(
+                    500,
+                    "server_misconfigured",
+                    "Server misconfigured",
+                    legacy_error="Server misconfigured",
+                )
                 return False
             _warn_admin_auth_disabled_once()
             return True
 
-        provided_token = (self.headers.get("X-Admin-Token") or "").strip()
-        if hmac.compare_digest(provided_token, expected_token):
+        provided_bearer_token = self._extract_bearer_token()
+        if provided_bearer_token is not None and hmac.compare_digest(provided_bearer_token, expected_token):
             return True
-        if self._has_valid_admin_session_cookie(expected_token):
-            return True
-
-        if html:
-            self._send_redirect("/admin/login")
-        else:
-            self.api_error(
-                401,
-                "unauthorized",
-                "Unauthorized",
-                legacy_error="Unauthorized",
-            )
+        self.api_error(
+            401,
+            "unauthorized",
+            "Unauthorized",
+            legacy_error="Unauthorized",
+        )
         return False
 
     def _extract_bearer_token(self) -> Optional[str]:
@@ -571,7 +595,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/admin/login":
             return self.handle_admin_login_get()
         if path == "/admin":
-            if not self.require_admin_auth(html=True):
+            if not self.require_admin_page_auth():
                 return
             return self.serve_file("admin.html", "text/html; charset=utf-8")
 
@@ -592,7 +616,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/swish/qr":
             return self.handle_swish_qr(query_params)
         if path.startswith("/api/admin/"):
-            if not self.require_admin_auth(html=False):
+            if not self.require_admin_api_auth():
                 return
         if path == "/api/admin/bookings":
             return self.handle_admin_bookings(query_params)
@@ -722,9 +746,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/admin/login":
             return self.handle_admin_login_post()
         if path == "/admin/logout":
+            if not self.require_admin_page_auth():
+                return
             return self.handle_admin_logout_post()
         if path.startswith("/api/admin/"):
-            if not self.require_admin_auth(html=False):
+            if not self.require_admin_api_auth():
                 return
         if path == "/api/admin/blocks":
             return self.handle_admin_blocks_create()
@@ -747,7 +773,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
         if path.startswith("/api/admin/"):
-            if not self.require_admin_auth(html=False):
+            if not self.require_admin_api_auth():
                 return
         if path == "/api/admin/blocks":
             return self.handle_admin_blocks_delete(query_params)
@@ -1875,6 +1901,10 @@ def run() -> None:
     db.init_db()
     if is_production_environment() and not get_admin_token():
         raise RuntimeError("ADMIN_TOKEN is required in production environments")
+    if is_production_environment() and not get_admin_password():
+        raise RuntimeError("ADMIN_PASSWORD is required in production environments")
+    if is_production_environment() and not get_admin_session_secret():
+        raise RuntimeError("ADMIN_SESSION_SECRET is required in production environments")
     if not is_production_environment() and not get_admin_token():
         _warn_admin_auth_disabled_once()
     port = int(os.environ.get("PORT", "8000"))

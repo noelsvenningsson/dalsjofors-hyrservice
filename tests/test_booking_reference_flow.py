@@ -72,7 +72,7 @@ class BookingReferenceFlowTest(unittest.TestCase):
             url = f"{url}?{urlencode(params)}"
         headers = {}
         if path.startswith("/api/admin/"):
-            headers["X-Admin-Token"] = self._admin_token
+            headers["Authorization"] = f"Bearer {self._admin_token}"
         request = Request(url, headers=headers)
         try:
             with urlopen(request) as response:

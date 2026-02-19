@@ -18,10 +18,13 @@ class AdminAuthSessionTest(unittest.TestCase):
         cls._tmpdir = TemporaryDirectory()
         cls._original_db_path = db.DB_PATH
         cls._original_admin_token = os.environ.get("ADMIN_TOKEN")
+        cls._original_admin_password = os.environ.get("ADMIN_PASSWORD")
         cls._original_session_secret = os.environ.get("ADMIN_SESSION_SECRET")
         cls._admin_token = "test-admin-token"
+        cls._admin_password = "test-admin-password"
         cls._session_secret = "test-admin-session-secret"
         os.environ["ADMIN_TOKEN"] = cls._admin_token
+        os.environ["ADMIN_PASSWORD"] = cls._admin_password
         os.environ["ADMIN_SESSION_SECRET"] = cls._session_secret
         db.DB_PATH = Path(cls._tmpdir.name) / "test_database.db"
         db.init_db()
@@ -41,6 +44,10 @@ class AdminAuthSessionTest(unittest.TestCase):
             os.environ.pop("ADMIN_TOKEN", None)
         else:
             os.environ["ADMIN_TOKEN"] = cls._original_admin_token
+        if cls._original_admin_password is None:
+            os.environ.pop("ADMIN_PASSWORD", None)
+        else:
+            os.environ["ADMIN_PASSWORD"] = cls._original_admin_password
         if cls._original_session_secret is None:
             os.environ.pop("ADMIN_SESSION_SECRET", None)
         else:
@@ -62,7 +69,7 @@ class AdminAuthSessionTest(unittest.TestCase):
         return out
 
     def _login_and_get_cookie(self) -> str:
-        form = urlencode({"token": self._admin_token})
+        form = urlencode({"password": self._admin_password})
         status, headers, _ = self._request(
             "POST",
             "/admin/login",
@@ -75,7 +82,7 @@ class AdminAuthSessionTest(unittest.TestCase):
         return set_cookie.split(";", 1)[0]
 
     def test_login_success(self) -> None:
-        form = urlencode({"token": self._admin_token})
+        form = urlencode({"password": self._admin_password})
         status, headers, _ = self._request(
             "POST",
             "/admin/login",
@@ -92,7 +99,7 @@ class AdminAuthSessionTest(unittest.TestCase):
         self.assertIn("Max-Age=28800", set_cookie)
 
     def test_login_failure(self) -> None:
-        form = urlencode({"token": "wrong-token"})
+        form = urlencode({"password": "wrong-password"})
         status, headers, body = self._request(
             "POST",
             "/admin/login",
@@ -101,7 +108,7 @@ class AdminAuthSessionTest(unittest.TestCase):
         )
         self.assertEqual(status, 401)
         self.assertIsNone(headers.get("Set-Cookie"))
-        self.assertIn("Fel token", body)
+        self.assertIn("Fel lösenord", body)
 
     def test_admin_authorized_after_login_cookie(self) -> None:
         cookie = self._login_and_get_cookie()
@@ -117,7 +124,7 @@ class AdminAuthSessionTest(unittest.TestCase):
 
     def test_api_admin_authorized_with_header(self) -> None:
         status, _, body = self._request(
-            "GET", "/api/admin/bookings", headers={"X-Admin-Token": self._admin_token}
+            "GET", "/api/admin/bookings", headers={"Authorization": f"Bearer {self._admin_token}"}
         )
         self.assertEqual(status, 200)
         payload = json.loads(body)
@@ -128,12 +135,9 @@ class AdminAuthSessionTest(unittest.TestCase):
         cookie_name, cookie_value = cookie.split("=", 1)
         tampered_value = f"{cookie_value}x"
         tampered_cookie = f"{cookie_name}={tampered_value}"
-        status, _, body = self._request(
-            "GET", "/api/admin/bookings", headers={"Cookie": tampered_cookie}
-        )
-        self.assertEqual(status, 401)
-        payload = json.loads(body)
-        self.assertEqual(payload.get("errorInfo", {}).get("code"), "unauthorized")
+        status, headers, _ = self._request("GET", "/admin", headers={"Cookie": tampered_cookie})
+        self.assertEqual(status, 303)
+        self.assertEqual(headers.get("Location"), "/admin/login")
 
 
 if __name__ == "__main__":

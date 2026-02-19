@@ -47,9 +47,9 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
         headers = {"Content-Type": "application/json"}
         if path.startswith("/api/admin/"):
             if admin_token == "use-default":
-                headers["X-Admin-Token"] = self._admin_token
+                headers["Authorization"] = f"Bearer {self._admin_token}"
             elif admin_token:
-                headers["X-Admin-Token"] = admin_token
+                headers["Authorization"] = f"Bearer {admin_token}"
         request = Request(
             f"{self._base_url}{path}",
             data=json.dumps(payload).encode("utf-8"),
@@ -70,9 +70,9 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
         headers = {}
         if path.startswith("/api/admin/"):
             if admin_token == "use-default":
-                headers["X-Admin-Token"] = self._admin_token
+                headers["Authorization"] = f"Bearer {self._admin_token}"
             elif admin_token:
-                headers["X-Admin-Token"] = admin_token
+                headers["Authorization"] = f"Bearer {admin_token}"
         request = Request(url, headers=headers)
         try:
             with urlopen(request) as response:
@@ -88,9 +88,9 @@ class AdminBlocksAndPendingExpirationTest(unittest.TestCase):
         headers = {}
         if path.startswith("/api/admin/"):
             if admin_token == "use-default":
-                headers["X-Admin-Token"] = self._admin_token
+                headers["Authorization"] = f"Bearer {self._admin_token}"
             elif admin_token:
-                headers["X-Admin-Token"] = admin_token
+                headers["Authorization"] = f"Bearer {admin_token}"
         request = Request(url, headers=headers, method="DELETE")
         try:
             with urlopen(request) as response:
