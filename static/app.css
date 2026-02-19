@@ -282,18 +282,6 @@ input[type="email"]:focus-visible,
   color: var(--warning);
 }
 
-.daytype-badge {
-  display: inline-flex;
-  margin: 0.4rem 0 0;
-  padding: 0.28rem 0.58rem;
-  border-radius: 999px;
-  background: #e8f0f9;
-  border: 1px solid #c9daeb;
-  color: #244564;
-  font-size: 0.84rem;
-  font-weight: 700;
-}
-
 .helper-text {
   margin: -0.1rem 0 0;
   color: var(--muted);

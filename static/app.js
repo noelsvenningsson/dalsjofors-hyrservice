@@ -40,7 +40,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const rentalInputs = document.querySelectorAll('input[name="rentalType"]');
   const priceInfo = document.getElementById('price-info');
-  const dayTypeBadge = document.getElementById('daytype-badge');
   const step2Back = document.getElementById('step2-back');
   const step2Next = document.getElementById('step2-next');
 
@@ -153,13 +152,6 @@ document.addEventListener('DOMContentLoaded', () => {
             state.dayTypeLabel = data.dayTypeLabel || null;
             const daySuffix = state.dayTypeLabel ? ` (${state.dayTypeLabel})` : '';
             setInfoState(priceInfo, `Pris: ${data.price} kr${daySuffix}`, 'success');
-            if (state.rentalType === 'FULL_DAY' && state.dayTypeLabel) {
-              dayTypeBadge.hidden = false;
-              dayTypeBadge.textContent = state.dayTypeLabel;
-            } else {
-              dayTypeBadge.hidden = true;
-              dayTypeBadge.textContent = '';
-            }
           } else {
             setInfoState(priceInfo, 'Kunde inte hämta pris', 'error');
           }
@@ -170,12 +162,8 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       if (state.rentalType === 'FULL_DAY') {
         setInfoState(priceInfo, 'Välj datum för exakt heldagspris', null);
-        dayTypeBadge.hidden = true;
-        dayTypeBadge.textContent = '';
       } else if (state.rentalType === 'TWO_HOURS') {
         setInfoState(priceInfo, 'Pris: 200 kr', null);
-        dayTypeBadge.hidden = true;
-        dayTypeBadge.textContent = '';
       }
     }
   }
