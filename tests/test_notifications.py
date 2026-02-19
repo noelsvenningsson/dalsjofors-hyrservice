@@ -91,6 +91,26 @@ class NotificationsTest(unittest.TestCase):
             },
         )
 
+    def test_create_notification_service_does_not_enable_generic_webhook_provider(self) -> None:
+        old_url = os.environ.get("NOTIFY_WEBHOOK_URL")
+        old_secret = os.environ.get("NOTIFY_WEBHOOK_SECRET")
+        os.environ["NOTIFY_WEBHOOK_URL"] = "https://example.com/webhook"
+        os.environ["NOTIFY_WEBHOOK_SECRET"] = "secret"
+        try:
+            service = notifications.create_notification_service_from_env()
+            provider_types = {provider.__class__.__name__ for provider in service.providers}
+            self.assertIn("LogNotificationProvider", provider_types)
+            self.assertNotIn("WebhookNotificationProvider", provider_types)
+        finally:
+            if old_url is None:
+                os.environ.pop("NOTIFY_WEBHOOK_URL", None)
+            else:
+                os.environ["NOTIFY_WEBHOOK_URL"] = old_url
+            if old_secret is None:
+                os.environ.pop("NOTIFY_WEBHOOK_SECRET", None)
+            else:
+                os.environ["NOTIFY_WEBHOOK_SECRET"] = old_secret
+
     def test_booking_creation_succeeds_when_notifier_raises(self) -> None:
         app.NOTIFIER = _RecordingNotifier(raise_on_created=True)
 

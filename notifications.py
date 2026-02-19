@@ -97,13 +97,13 @@ def build_booking_payload(booking: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_notification_service_from_env() -> NotificationService:
-    """Create notification service with default log provider plus optional webhook."""
-    providers: list[NotificationProvider] = [LogNotificationProvider()]
+    """Create notification service with only safe providers.
 
-    webhook_url = (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip()
-    if webhook_url:
-        webhook_secret = (os.environ.get("NOTIFY_WEBHOOK_SECRET") or "").strip() or None
-        providers.append(WebhookNotificationProvider(webhook_url, webhook_secret))
+    Receipt webhook delivery is handled explicitly in ``send_receipt_webhook``
+    after payment is PAID/CONFIRMED. The generic event notifier must never send
+    booking.created/booking.confirmed to the receipt webhook endpoint.
+    """
+    providers: list[NotificationProvider] = [LogNotificationProvider()]
 
     return NotificationService(providers)
 
