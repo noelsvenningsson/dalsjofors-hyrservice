@@ -126,7 +126,9 @@ Recent migrations and behavior updates are auto-applied by `db.init_db()`:
 
 5. Ephemeral admin test bookings
 - Separate `test_bookings` table (never mixed with `bookings`)
-- Auto-PAID and auto-delete processing via `process_due_test_bookings()` on:
+- Test bookings are created as fake `PAID` immediately
+- SMS with receipt fields is sent immediately (idempotent)
+- Auto-delete processing via `process_due_test_bookings()` on:
   - `/api/admin/*`
   - `/api/health`
   - `/api/payment-status`
@@ -378,6 +380,7 @@ Common errors:
 ### `POST /api/admin/test-bookings`
 
 Creates an ephemeral test booking in a separate `test_bookings` table.
+The booking is immediately marked as fake `PAID`, triggers SMS flow, and is deleted after 5 minutes.
 
 Required header:
 - `X-Admin-Token: <ADMIN_TOKEN>`
@@ -399,7 +402,7 @@ curl -sS -X POST http://localhost:8000/api/admin/test-bookings \
 
 ### `POST /api/admin/test-bookings/run`
 
-Runs due processing now (`PENDING -> PAID`, sends test SMS idempotently, deletes due rows).
+Runs due processing now (idempotent SMS retry + deletion of rows older than 5 minutes).
 
 Required header:
 - `X-Admin-Token: <ADMIN_TOKEN>`

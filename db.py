@@ -962,7 +962,8 @@ def create_test_booking(
     if now is None:
         now = datetime.now()
     created_at = now.isoformat(timespec="seconds")
-    due_at = (now + timedelta(minutes=5)).isoformat(timespec="seconds")
+    auto_paid_at = created_at
+    delete_at = (now + timedelta(minutes=5)).isoformat(timespec="seconds")
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -980,9 +981,9 @@ def create_test_booking(
                 price,
                 sms_target_temp
             )
-            VALUES (?, ?, ?, 'PENDING', NULL, ?, ?, ?, ?)
+            VALUES (?, ?, ?, 'PAID', NULL, ?, ?, ?, ?)
             """,
-            (created_at, due_at, due_at, trailer_type_u, rental_type_u, int(price), sms_target_temp),
+            (created_at, auto_paid_at, delete_at, trailer_type_u, rental_type_u, int(price), sms_target_temp),
         )
         test_booking_id = int(cur.lastrowid)
         booking_reference = _generate_test_booking_reference(now, test_booking_id)
@@ -1048,6 +1049,29 @@ def get_due_test_bookings_for_auto_paid(now: Optional[datetime] = None) -> list[
             FROM test_bookings
             WHERE status = 'PENDING'
               AND auto_paid_at <= ?
+            ORDER BY auto_paid_at, id
+            """,
+            (now_iso,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_paid_test_bookings_pending_sms(now: Optional[datetime] = None) -> list[dict]:
+    if now is None:
+        now = datetime.now()
+    now_iso = now.isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM test_bookings
+            WHERE status = 'PAID'
+              AND auto_paid_at <= ?
+              AND (sms_admin_sent_at IS NULL OR (sms_target_temp IS NOT NULL AND sms_target_sent_at IS NULL))
             ORDER BY auto_paid_at, id
             """,
             (now_iso,),

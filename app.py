@@ -156,27 +156,28 @@ def process_due_test_bookings(now: Optional[datetime] = None) -> Dict[str, int]:
     due_rows = db.get_due_test_bookings_for_auto_paid(now)
     for row in due_rows:
         test_booking_id = int(row.get("id"))
-        if not db.mark_test_booking_paid(test_booking_id, now=now):
-            continue
-        processed_paid += 1
-        refreshed = db.get_test_booking_by_id(test_booking_id) or row
+        if db.mark_test_booking_paid(test_booking_id, now=now):
+            processed_paid += 1
 
-        reference = refreshed.get("booking_reference") or f"TEST-{test_booking_id}"
-        trailer_label = _test_trailer_label(refreshed.get("trailer_type") or "")
-        date_label = (refreshed.get("created_at") or "")[:10]
-        period_label = _test_receipt_period_label(refreshed.get("rental_type") or "", date_label)
-        price_label = f"{refreshed.get('price')} kr"
+    paid_rows = db.get_paid_test_bookings_pending_sms(now)
+    for row in paid_rows:
+        test_booking_id = int(row.get("id"))
+        reference = row.get("booking_reference") or f"TEST-{test_booking_id}"
+        trailer_label = _test_trailer_label(row.get("trailer_type") or "")
+        date_label = (row.get("created_at") or "")[:10]
+        period_label = _test_receipt_period_label(row.get("rental_type") or "", date_label)
+        price_label = f"{row.get('price')} kr"
 
         admin_number = sms_provider.get_admin_sms_number_e164()
-        if admin_number and refreshed.get("sms_admin_sent_at") is None:
+        if admin_number and row.get("sms_admin_sent_at") is None:
             admin_message = (
                 f"Testbokning PAID: {reference} | {trailer_label} | {period_label} | {price_label}"
             )
             if sms_provider.send_sms(admin_number, admin_message):
                 db.mark_test_sms_admin_sent(test_booking_id, sent_at=now_iso)
 
-        target_number = refreshed.get("sms_target_temp")
-        if target_number and refreshed.get("sms_target_sent_at") is None:
+        target_number = row.get("sms_target_temp")
+        if target_number and row.get("sms_target_sent_at") is None:
             target_message = (
                 f"Dalsjofors Hyrservice TEST: Kvitto {reference} | {trailer_label} | "
                 f"{period_label} | {price_label} | Betalning: PAID"
@@ -1372,6 +1373,8 @@ class Handler(BaseHTTPRequestHandler):
                 price=price,
                 sms_target_temp=sms_to,
             )
+            # Force immediate fake-paid notification flow on creation.
+            process_due_test_bookings()
         except ValueError as exc:
             return self.api_error(400, "invalid_request", str(exc), legacy_error=str(exc))
         except Exception as exc:

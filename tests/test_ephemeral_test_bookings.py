@@ -1,6 +1,5 @@
 import json
 import os
-import sqlite3
 import threading
 import unittest
 from datetime import datetime, timedelta
@@ -26,7 +25,7 @@ class EphemeralTestBookingsProcessTest(unittest.TestCase):
         db.DB_PATH = self._original_db_path
         self._tmpdir.cleanup()
 
-    def test_process_due_test_bookings_paid_sms_and_delete_idempotent(self) -> None:
+    def test_process_due_test_bookings_immediate_paid_sms_and_delete_idempotent(self) -> None:
         now = datetime(2026, 2, 19, 12, 0, 0)
         row = db.create_test_booking(
             trailer_type="GALLER",
@@ -36,31 +35,12 @@ class EphemeralTestBookingsProcessTest(unittest.TestCase):
             now=now,
         )
         test_booking_id = int(row["id"])
-
-        # Split PAID and delete moment in this test so both steps can be asserted.
-        conn = sqlite3.connect(db.DB_PATH)
-        try:
-            conn.execute(
-                """
-                UPDATE test_bookings
-                SET auto_paid_at = ?,
-                    delete_at = ?
-                WHERE id = ?
-                """,
-                (
-                    (now - timedelta(minutes=1)).isoformat(timespec="seconds"),
-                    (now + timedelta(minutes=1)).isoformat(timespec="seconds"),
-                    test_booking_id,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        self.assertEqual(row.get("status"), "PAID")
 
         with mock.patch("sms_provider.get_admin_sms_number_e164", return_value="+46709663485"):
             with mock.patch("sms_provider.send_sms", return_value=True) as send_sms_mock:
                 first = app.process_due_test_bookings(now=now)
-                self.assertEqual(first, {"processedPaid": 1, "deleted": 0})
+                self.assertEqual(first, {"processedPaid": 0, "deleted": 0})
                 after_first = db.get_test_booking_by_id(test_booking_id)
                 self.assertIsNotNone(after_first)
                 self.assertEqual(after_first.get("status"), "PAID")
@@ -70,7 +50,7 @@ class EphemeralTestBookingsProcessTest(unittest.TestCase):
                 self.assertEqual(second, {"processedPaid": 0, "deleted": 0})
                 self.assertEqual(send_sms_mock.call_count, 2)
 
-                delete_now = now + timedelta(minutes=2)
+                delete_now = now + timedelta(minutes=6)
                 third = app.process_due_test_bookings(now=delete_now)
                 self.assertEqual(third, {"processedPaid": 0, "deleted": 1})
                 self.assertIsNone(db.get_test_booking_by_id(test_booking_id))
@@ -155,7 +135,7 @@ class EphemeralTestBookingsApiTest(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertIn("id", created)
         self.assertIn("bookingReference", created)
-        self.assertEqual(created.get("status"), "PENDING")
+        self.assertEqual(created.get("status"), "PAID")
 
         list_status, listed = self._request_json("GET", "/api/admin/test-bookings")
         self.assertEqual(list_status, 200)
