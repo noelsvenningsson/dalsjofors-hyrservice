@@ -125,7 +125,7 @@ def _short_error(text: str, *, limit: int = 120) -> str:
     return value[:limit] + "..."
 
 
-def _post_json_with_redirect_preserving_post(
+def _post_json_follow_redirect_preserve_post(
     url: str, payload: dict[str, Any], *, timeout_seconds: int, max_redirects: int = 2
 ) -> tuple[int, str]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -143,20 +143,24 @@ def _post_json_with_redirect_preserving_post(
             return int(err.code), error_body, location
 
     current_url = url
-    for _ in range(max_redirects + 1):
+    status_code = 0
+    response_body = ""
+    redirects_seen = 0
+    while True:
         status_code, response_body, location = _send_once(current_url)
         if status_code not in {301, 302, 303, 307, 308}:
             return status_code, response_body
         if not location:
             return status_code, response_body
 
-        redirect_url = urllib.parse.urljoin(current_url, location)
-        from_host = urllib.parse.urlparse(current_url).netloc
-        to_host = urllib.parse.urlparse(redirect_url).netloc
-        logger.info("WEBHOOK_REDIRECT status=%s from_host=%s to_host=%s", status_code, from_host, to_host)
-        current_url = redirect_url
+        redirects_seen += 1
+        if redirects_seen > max_redirects:
+            raise RuntimeError(f"too many redirects: {redirects_seen}")
 
-    return status_code, response_body
+        redirect_url = urllib.parse.urljoin(current_url, location)
+        to_host = urllib.parse.urlparse(redirect_url).netloc
+        logger.info("WEBHOOK_REDIRECT status=%s to_host=%s", status_code, to_host)
+        current_url = redirect_url
 
 
 def send_receipt_webhook(booking: dict[str, Any]) -> bool:
@@ -195,7 +199,7 @@ def send_receipt_webhook(booking: dict[str, Any]) -> bool:
         mask_email(customer_email),
     )
     try:
-        status_code, response_body = _post_json_with_redirect_preserving_post(webhook_url, payload, timeout_seconds=10)
+        status_code, response_body = _post_json_follow_redirect_preserve_post(webhook_url, payload, timeout_seconds=10)
     except Exception as exc:
         logger.warning("WEBHOOK_FAIL status=0 error=%s", _short_error(str(exc)))
         return False
