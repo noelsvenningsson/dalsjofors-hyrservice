@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import urllib.error
-import urllib.parse
 import urllib.request
 from typing import Any, Protocol
 
@@ -125,42 +124,25 @@ def _short_error(text: str, *, limit: int = 120) -> str:
     return value[:limit] + "..."
 
 
-def _post_json_follow_redirect_preserve_post(
-    url: str, payload: dict[str, Any], *, timeout_seconds: int, max_redirects: int = 2
-) -> tuple[int, str]:
+def _post_json_no_redirect(url: str, payload: dict[str, Any], *, timeout_seconds: int) -> tuple[int, str, str | None]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     opener = urllib.request.build_opener(_NoRedirectHandler())
-
-    def _send_once(target_url: str) -> tuple[int, str, str | None]:
-        request = urllib.request.Request(target_url, data=body, headers=headers, method="POST")
-        try:
-            with opener.open(request, timeout=timeout_seconds) as response:
-                return int(response.getcode() or 0), response.read().decode("utf-8", errors="replace"), None
-        except urllib.error.HTTPError as err:
-            location = err.headers.get("Location")
-            error_body = err.read().decode("utf-8", errors="replace")
-            return int(err.code), error_body, location
-
-    current_url = url
-    status_code = 0
-    response_body = ""
-    redirects_seen = 0
-    while True:
-        status_code, response_body, location = _send_once(current_url)
-        if status_code not in {301, 302, 303, 307, 308}:
-            return status_code, response_body
-        if not location:
-            return status_code, response_body
-
-        redirects_seen += 1
-        if redirects_seen > max_redirects:
-            raise RuntimeError(f"too many redirects: {redirects_seen}")
-
-        redirect_url = urllib.parse.urljoin(current_url, location)
-        to_host = urllib.parse.urlparse(redirect_url).netloc
-        logger.info("WEBHOOK_REDIRECT status=%s to_host=%s", status_code, to_host)
-        current_url = redirect_url
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    previous_opener = getattr(urllib.request, "_opener", None)
+    urllib.request.install_opener(opener)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            return int(response.getcode() or 0), response.read().decode("utf-8", errors="replace"), None
+    except urllib.error.HTTPError as err:
+        location = err.headers.get("Location")
+        error_body = err.read().decode("utf-8", errors="replace")
+        return int(err.code), error_body, location
+    finally:
+        if previous_opener is None:
+            urllib.request.install_opener(urllib.request.build_opener())
+        else:
+            urllib.request.install_opener(previous_opener)
 
 
 def send_receipt_webhook(booking: dict[str, Any]) -> bool:
@@ -199,10 +181,18 @@ def send_receipt_webhook(booking: dict[str, Any]) -> bool:
         mask_email(customer_email),
     )
     try:
-        status_code, response_body = _post_json_follow_redirect_preserve_post(webhook_url, payload, timeout_seconds=10)
+        status_code, response_body, redirect_location = _post_json_no_redirect(webhook_url, payload, timeout_seconds=10)
     except Exception as exc:
         logger.warning("WEBHOOK_FAIL status=0 error=%s", _short_error(str(exc)))
         return False
+
+    if status_code in {302, 303}:
+        logger.info(
+            "WEBHOOK_OK_REDIRECT status=%s bookingReference=%s",
+            status_code,
+            booking.get("booking_reference"),
+        )
+        return True
 
     if status_code == 200 and "ok" in response_body.lower():
         logger.info("WEBHOOK_OK status=200 bookingReference=%s", booking.get("booking_reference"))
@@ -211,7 +201,7 @@ def send_receipt_webhook(booking: dict[str, Any]) -> bool:
     logger.warning(
         "WEBHOOK_FAIL status=%s body=%s bookingReference=%s",
         status_code,
-        _short_error(response_body),
+        _short_error(response_body if response_body else (redirect_location or "")),
         booking.get("booking_reference"),
     )
     return False

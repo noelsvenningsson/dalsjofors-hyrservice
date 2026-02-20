@@ -2,11 +2,13 @@ import json
 import os
 import threading
 import unittest
+from io import BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 import app
 import db
@@ -157,71 +159,9 @@ class NotificationsTest(unittest.TestCase):
         self.assertEqual(recorder.confirmed_calls[0].get("id"), booking_id)
         self.assertEqual(recorder.confirmed_calls[0].get("status"), "CONFIRMED")
 
+    def test_paid_callback_clears_receipt_temp_fields_when_webhook_returns_302(self) -> None:
+        requests_seen: list[str] = []
 
-class RedirectPreservingPostTest(unittest.TestCase):
-    def _run_redirect_server_test(self, final_status: int, final_body: str) -> tuple[int, str, list[tuple[str, str]]]:
-        requests_seen: list[tuple[str, str]] = []
-
-        class _Handler(BaseHTTPRequestHandler):
-            def log_message(self, format: str, *args) -> None:  # type: ignore[override]
-                return
-
-            def do_POST(self) -> None:  # noqa: N802
-                content_length = int(self.headers.get("Content-Length", "0"))
-                body = self.rfile.read(content_length).decode("utf-8")
-                requests_seen.append((self.path, body))
-
-                if self.path == "/exec":
-                    self.send_response(302)
-                    self.send_header("Location", "/final")
-                    self.end_headers()
-                    self.wfile.write(b"redirect")
-                    return
-                if self.path == "/final":
-                    self.send_response(final_status)
-                    self.end_headers()
-                    self.wfile.write(final_body.encode("utf-8"))
-                    return
-
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(b"not found")
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            url = f"http://127.0.0.1:{server.server_port}/exec"
-            status, body = notifications._post_json_follow_redirect_preserve_post(
-                url,
-                {"hello": "world"},
-                timeout_seconds=2,
-                max_redirects=2,
-            )
-            return status, body, requests_seen
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
-
-    def test_post_redirect_preserving_post_success(self) -> None:
-        status, body, requests_seen = self._run_redirect_server_test(200, "ok")
-        self.assertEqual(status, 200)
-        self.assertEqual(body, "ok")
-        self.assertEqual(len(requests_seen), 2)
-        self.assertEqual(requests_seen[0][0], "/exec")
-        self.assertEqual(requests_seen[1][0], "/final")
-        self.assertEqual(requests_seen[0][1], requests_seen[1][1])
-
-    def test_post_redirect_preserving_post_final_405(self) -> None:
-        status, body, requests_seen = self._run_redirect_server_test(405, "method not allowed")
-        self.assertEqual(status, 405)
-        self.assertIn("method not allowed", body)
-        self.assertEqual(len(requests_seen), 2)
-        self.assertEqual(requests_seen[0][0], "/exec")
-        self.assertEqual(requests_seen[1][0], "/final")
-
-    def _run_send_receipt_webhook_server_test(self, final_status: int, final_body: str) -> bool:
         class _Handler(BaseHTTPRequestHandler):
             def log_message(self, format: str, *args) -> None:  # type: ignore[override]
                 return
@@ -229,6 +169,7 @@ class RedirectPreservingPostTest(unittest.TestCase):
             def do_POST(self) -> None:  # noqa: N802
                 content_length = int(self.headers.get("Content-Length", "0"))
                 self.rfile.read(content_length)
+                requests_seen.append(self.path)
 
                 if self.path == "/exec":
                     self.send_response(302)
@@ -236,10 +177,116 @@ class RedirectPreservingPostTest(unittest.TestCase):
                     self.end_headers()
                     self.wfile.write(b"redirect")
                     return
-                if self.path == "/final":
-                    self.send_response(final_status)
+
+                self.send_response(405)
+                self.end_headers()
+                self.wfile.write(b"method not allowed")
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        old_url = os.environ.get("NOTIFY_WEBHOOK_URL")
+        old_secret = os.environ.get("NOTIFY_WEBHOOK_SECRET")
+        try:
+            os.environ["NOTIFY_WEBHOOK_URL"] = f"http://127.0.0.1:{server.server_port}/exec"
+            os.environ["NOTIFY_WEBHOOK_SECRET"] = "test-secret"
+
+            create_status, create_payload = self._post_json(
+                "/api/hold",
+                {
+                    "trailerType": "KAP",
+                    "rentalType": "TWO_HOURS",
+                    "date": "2026-06-04",
+                    "startTime": "10:00",
+                    "receiptRequested": True,
+                    "customerEmail": "receipt@example.com",
+                },
+            )
+            self.assertEqual(create_status, 201)
+            booking_id = create_payload["bookingId"]
+
+            callback_status, callback_payload = self._post_json(
+                "/api/swish/callback",
+                {"paymentReference": booking_id, "status": "PAID"},
+            )
+            self.assertEqual(callback_status, 200)
+            self.assertTrue(callback_payload.get("ok"))
+            self.assertEqual(requests_seen, ["/exec"])
+
+            booking = db.get_booking_by_id(booking_id)
+            self.assertIsNotNone(booking)
+            self.assertIsNone(booking.get("customer_email_temp"))
+            self.assertEqual(booking.get("receipt_requested_temp"), 0)
+        finally:
+            if old_url is None:
+                os.environ.pop("NOTIFY_WEBHOOK_URL", None)
+            else:
+                os.environ["NOTIFY_WEBHOOK_URL"] = old_url
+            if old_secret is None:
+                os.environ.pop("NOTIFY_WEBHOOK_SECRET", None)
+            else:
+                os.environ["NOTIFY_WEBHOOK_SECRET"] = old_secret
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+
+class ReceiptWebhookRedirectHandlingTest(unittest.TestCase):
+    @patch("notifications.urllib.request.urlopen")
+    def test_send_receipt_webhook_treats_initial_http_302_as_success(self, mock_urlopen) -> None:
+        mock_urlopen.side_effect = HTTPError(
+            "https://example.com/exec",
+            302,
+            "Found",
+            {"Location": "https://script.googleusercontent.com/macros/echo"},
+            BytesIO(b"redirect"),
+        )
+
+        old_url = os.environ.get("NOTIFY_WEBHOOK_URL")
+        old_secret = os.environ.get("NOTIFY_WEBHOOK_SECRET")
+        os.environ["NOTIFY_WEBHOOK_URL"] = "https://example.com/exec"
+        os.environ["NOTIFY_WEBHOOK_SECRET"] = "test-secret"
+        try:
+            ok = notifications.send_receipt_webhook(
+                {
+                    "id": 123,
+                    "booking_reference": "DHS-20260219-000001",
+                    "trailer_type": "KAP",
+                    "start_dt": "2026-02-20T10:00",
+                    "end_dt": "2026-02-20T12:00",
+                    "price": 200,
+                    "customer_email_temp": "test@example.com",
+                    "receipt_requested_temp": 1,
+                }
+            )
+            self.assertTrue(ok)
+        finally:
+            if old_url is None:
+                os.environ.pop("NOTIFY_WEBHOOK_URL", None)
+            else:
+                os.environ["NOTIFY_WEBHOOK_URL"] = old_url
+            if old_secret is None:
+                os.environ.pop("NOTIFY_WEBHOOK_SECRET", None)
+            else:
+                os.environ["NOTIFY_WEBHOOK_SECRET"] = old_secret
+
+    def _run_send_receipt_webhook_server_test(self, first_status: int, first_body: str) -> tuple[bool, list[str]]:
+        requests_seen: list[str] = []
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args) -> None:  # type: ignore[override]
+                return
+
+            def do_POST(self) -> None:  # noqa: N802
+                content_length = int(self.headers.get("Content-Length", "0"))
+                self.rfile.read(content_length)
+                requests_seen.append(self.path)
+
+                if self.path == "/exec":
+                    self.send_response(first_status)
+                    self.send_header("Location", "/final")
                     self.end_headers()
-                    self.wfile.write(final_body.encode("utf-8"))
+                    self.wfile.write(first_body.encode("utf-8"))
                     return
 
                 self.send_response(404)
@@ -256,7 +303,7 @@ class RedirectPreservingPostTest(unittest.TestCase):
             os.environ["NOTIFY_WEBHOOK_URL"] = url
             os.environ["NOTIFY_WEBHOOK_SECRET"] = "test-secret"
             try:
-                return notifications.send_receipt_webhook(
+                result = notifications.send_receipt_webhook(
                     {
                         "id": 123,
                         "booking_reference": "DHS-20260219-000001",
@@ -268,6 +315,7 @@ class RedirectPreservingPostTest(unittest.TestCase):
                         "receipt_requested_temp": 1,
                     }
                 )
+                return result, requests_seen
             finally:
                 if old_url is None:
                     os.environ.pop("NOTIFY_WEBHOOK_URL", None)
@@ -282,11 +330,15 @@ class RedirectPreservingPostTest(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-    def test_send_receipt_webhook_success_after_redirect(self) -> None:
-        self.assertTrue(self._run_send_receipt_webhook_server_test(200, "ok"))
+    def test_send_receipt_webhook_accepts_302_and_does_not_follow_redirect(self) -> None:
+        ok, requests_seen = self._run_send_receipt_webhook_server_test(302, "redirect")
+        self.assertTrue(ok)
+        self.assertEqual(requests_seen, ["/exec"])
 
-    def test_send_receipt_webhook_fail_on_final_405(self) -> None:
-        self.assertFalse(self._run_send_receipt_webhook_server_test(405, "method not allowed"))
+    def test_send_receipt_webhook_fail_on_405(self) -> None:
+        ok, requests_seen = self._run_send_receipt_webhook_server_test(405, "method not allowed")
+        self.assertFalse(ok)
+        self.assertEqual(requests_seen, ["/exec"])
 
 
 if __name__ == "__main__":
