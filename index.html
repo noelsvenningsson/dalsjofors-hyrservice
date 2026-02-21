@@ -12,6 +12,10 @@
       <p class="kicker">Trygg släpvagnsuthyrning</p>
       <h1>Dalsjöfors Hyrservice</h1>
       <p class="lead">Boka ditt släp i fem enkla steg</p>
+      <nav class="site-nav" aria-label="Huvudmeny">
+        <a href="/">Boka släp</a>
+        <a href="/report-issue" class="report-link">Rapportera fel/skada</a>
+      </nav>
     </div>
   </header>
 
@@ -22,6 +26,9 @@
     <section id="step1" class="step">
       <h2>Välj släp</h2>
       <p class="step-intro">Välj vilken typ av släp du vill hyra.</p>
+      <p class="report-cta-wrap">
+        <a class="report-cta" href="/report-issue">Rapportera fel/skada på släp</a>
+      </p>
       <div class="trailers">
         <button type="button" data-type="GALLER" class="card" id="card-galler">
           <h3>Galler-släp</h3>
@@ -125,6 +132,9 @@
     <section id="step5" class="step" hidden>
       <h2>Bokningskvitto</h2>
       <p class="step-intro">Kort sammanfattning av din bokning.</p>
+      <p class="report-cta-wrap">
+        <a class="report-cta" href="/report-issue">Rapportera fel/skada på släp</a>
+      </p>
       <div id="confirmation" class="summary-list receipt-list"></div>
       <div class="receipt-company">
         <p><strong>Dalsjöfors Hyrservice AB</strong></p>
@@ -138,7 +148,6 @@
     <section id="dev-panel" class="dev" hidden>
       <h3>Dev‑panel</h3>
       <p id="debug-info"></p>
-      <button type="button" id="dev-book">Skapa testbokning</button>
     </section>
   </main>
 

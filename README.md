@@ -73,6 +73,12 @@ Use `.env.example` as the source of truth.
 - `ADMIN_SESSION_SECRET`: HMAC secret for signed admin session cookies (`/admin/login`)
   - Required if browser login/session auth should be enabled
   - Keep this secret unique per environment
+- `SMTP_HOST`: SMTP server hostname for fel/skaderapport e-post
+- `SMTP_PORT`: SMTP server port (for example `587`)
+- `SMTP_USER`: SMTP username
+- `SMTP_PASSWORD`: SMTP password
+- `SMTP_FROM`: avsändaradress för rapportmail (fallback: `SMTP_USER`)
+- `REPORT_TO`: mottagaradress för rapporter (default: `svenningsson@outlook.com`)
 
 ## Deployment Notes (Render)
 
@@ -130,15 +136,12 @@ Recent migrations and behavior updates are auto-applied by `db.init_db()`:
 - Webhook triggas endast vid `PAID`/`CONFIRMED` och bara om `receipt_requested_temp=1` och `customer_email_temp` finns
 - Vid webhook-svar `HTTP 200` med body som innehåller `ok` rensas tempfälten för att undvika spam vid retries
 
-6. Ephemeral admin test bookings
-- Separate `test_bookings` table (never mixed with `bookings`)
-- Test bookings are created as fake `PAID` immediately
-- SMS with receipt fields is sent immediately (idempotent)
-- Auto-delete processing via `process_due_test_bookings()` on:
-  - `/api/admin/*`
-  - `/api/health`
-  - `/api/payment-status`
-- Test bookings are deleted after 5 minutes
+6. Fel/skaderapport
+- Ny publik sida: `GET /report-issue`
+- Formulär skickas till `POST /report-issue` med `multipart/form-data`
+- Stöd för 1-6 bilder (`jpg/png/webp`, max 5 MB/st), server-side validering och e-post med bilagor
+- Enkel anti-spam via honeypot + rate limit per IP
+- Vid saknad SMTP-konfiguration loggas fel och användaren får ett generiskt felmeddelande
 
 ## API Quick Reference
 
@@ -464,58 +467,18 @@ Common errors:
 - `400 {"error":"id must be an integer"}`
 - `404 {"error":"Block not found"}`
 
-### `POST /api/admin/test-bookings`
+### `GET /report-issue`
 
-Creates an ephemeral test booking in a separate `test_bookings` table.
-The booking is immediately marked as fake `PAID`, triggers SMS flow, and is deleted after 5 minutes.
+Visar formuläret för fel-/skaderapport.
 
-Required header:
-- `X-Admin-Token: <ADMIN_TOKEN>`
+### `POST /report-issue`
 
-JSON body:
-- `smsTo` (required): Swedish mobile (`07...` or `+46...`)
-- `trailerType` (optional): `GALLER` or `KAPS` (default `GALLER`)
-- `date` (optional): `YYYY-MM-DD` (default today)
-- `rentalType` (optional): `HELDAG` (default `HELDAG`)
+Tar emot rapporten via `multipart/form-data` och skickar e-post till `REPORT_TO`.
 
-Example:
-
-```bash
-curl -sS -X POST http://localhost:8000/api/admin/test-bookings \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-Token: ${ADMIN_TOKEN}" \
-  -d '{"smsTo":"0701234567","trailerType":"GALLER","date":"2026-02-19","rentalType":"HELDAG"}' | jq
-```
-
-### `POST /api/admin/test-bookings/run`
-
-Runs due processing now (idempotent SMS retry + deletion of rows older than 5 minutes).
-
-Required header:
-- `X-Admin-Token: <ADMIN_TOKEN>`
-
-Example:
-
-```bash
-curl -sS -X POST http://localhost:8000/api/admin/test-bookings/run \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-Token: ${ADMIN_TOKEN}" \
-  -d '{}' | jq
-```
-
-### `GET /api/admin/test-bookings`
-
-Returns the latest 10 ephemeral test bookings (admin-only).
-
-Required header:
-- `X-Admin-Token: <ADMIN_TOKEN>`
-
-Example:
-
-```bash
-curl -sS http://localhost:8000/api/admin/test-bookings \
-  -H "X-Admin-Token: ${ADMIN_TOKEN}" | jq
-```
+Formfält:
+- Obligatoriska: `name`, `phone`, `email`, `trailer_type`, `detected_at`, `report_type`, `message`
+- Valfritt: `booking_reference`
+- Bilder: `images` (0-6 filer, `jpg/png/webp`, max 5 MB per fil)
 
 ### `GET /api/health`
 

@@ -58,9 +58,14 @@ import hashlib
 import html as html_lib
 import time
 import base64
+import cgi
+import smtplib
+import uuid
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -81,6 +86,24 @@ NOTIFIER = notifications.create_notification_service_from_env()
 ADMIN_SESSION_COOKIE_NAME = "admin_session"
 ADMIN_SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 ADMIN_LOGIN_FAILURE_DELAY_SECONDS = 0.3
+REPORT_TYPES = {"BEFORE_RENTAL", "DURING_RENTAL", "OTHER"}
+REPORT_TYPE_LABELS = {
+    "BEFORE_RENTAL": "Upptäckt innan hyra",
+    "DURING_RENTAL": "Skada under hyra",
+    "OTHER": "Annat",
+}
+REPORT_ALLOWED_MIME_TYPES = {
+    "image/jpeg": {".jpg", ".jpeg"},
+    "image/png": {".png"},
+    "image/webp": {".webp"},
+}
+REPORT_MAX_IMAGE_COUNT = 6
+REPORT_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+REPORT_MAX_TOTAL_ATTACHMENT_BYTES = 15 * 1024 * 1024
+REPORT_MAX_ATTACHED_IMAGES = 3
+REPORT_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
+REPORT_RATE_LIMIT_MAX_SUBMITS = 5
+REPORT_RATE_LIMIT_BY_IP: Dict[str, list[float]] = {}
 
 
 def _debug_swish_enabled() -> bool:
@@ -133,61 +156,6 @@ def parse_query(query: str) -> Dict[str, str]:
     """Parse a URL query string into a dict of first values."""
     parsed = urllib.parse.parse_qs(query, keep_blank_values=True)
     return {k: v[0] for k, v in parsed.items() if v}
-
-
-def _test_trailer_label(trailer_type: str) -> str:
-    trailer = (trailer_type or "").upper()
-    if trailer == "GALLER":
-        return "Galler-slap"
-    return "Kapslap"
-
-
-def _test_receipt_period_label(rental_type: str, selected_date: str) -> str:
-    if (rental_type or "").upper() == "HELDAG":
-        return selected_date
-    return selected_date
-
-
-def process_due_test_bookings(now: Optional[datetime] = None) -> Dict[str, int]:
-    if now is None:
-        now = datetime.now()
-    processed_paid = 0
-    now_iso = now.isoformat(timespec="seconds")
-
-    due_rows = db.get_due_test_bookings_for_auto_paid(now)
-    for row in due_rows:
-        test_booking_id = int(row.get("id"))
-        if db.mark_test_booking_paid(test_booking_id, now=now):
-            processed_paid += 1
-
-    paid_rows = db.get_paid_test_bookings_pending_sms(now)
-    for row in paid_rows:
-        test_booking_id = int(row.get("id"))
-        reference = row.get("booking_reference") or f"TEST-{test_booking_id}"
-        trailer_label = _test_trailer_label(row.get("trailer_type") or "")
-        date_label = (row.get("created_at") or "")[:10]
-        period_label = _test_receipt_period_label(row.get("rental_type") or "", date_label)
-        price_label = f"{row.get('price')} kr"
-
-        admin_number = sms_provider.get_admin_sms_number_e164()
-        if admin_number and row.get("sms_admin_sent_at") is None:
-            admin_message = (
-                f"Testbokning PAID: {reference} | {trailer_label} | {period_label} | {price_label}"
-            )
-            if sms_provider.send_sms(admin_number, admin_message):
-                db.mark_test_sms_admin_sent(test_booking_id, sent_at=now_iso)
-
-        target_number = row.get("sms_target_temp")
-        if target_number and row.get("sms_target_sent_at") is None:
-            target_message = (
-                f"Dalsjofors Hyrservice TEST: Kvitto {reference} | {trailer_label} | "
-                f"{period_label} | {price_label} | Betalning: PAID"
-            )
-            if sms_provider.send_sms(target_number, target_message):
-                db.mark_test_sms_target_sent(test_booking_id, sent_at=now_iso)
-
-    deleted = db.delete_due_test_bookings(now)
-    return {"processedPaid": processed_paid, "deleted": deleted}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -618,55 +586,6 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return value
 
-    def _validate_required_test_phone(self, raw_value: Optional[str]) -> Optional[str]:
-        value = (raw_value or "").strip()
-        if not value:
-            self._invalid_field_error({"smsTo": "This field is required"})
-            return None
-        normalized = sms_provider.normalize_swedish_mobile(value)
-        if not normalized:
-            self._invalid_field_error({"smsTo": "Ange svensk mobil: +46xxxxxxxxx eller 07xxxxxxxx"})
-            return None
-        return normalized
-
-    def _validate_test_trailer_type(self, raw_value: Optional[str]) -> Optional[str]:
-        value = (raw_value or "GALLER").strip().upper()
-        if value == "KAP":
-            value = "KAPS"
-        if value not in db.VALID_TEST_TRAILER_TYPES:
-            self._invalid_field_error({"trailerType": "Must be one of: GALLER, KAPS"})
-            return None
-        return value
-
-    def _validate_test_rental_type(self, raw_value: Optional[str]) -> Optional[str]:
-        value = (raw_value or "HELDAG").strip().upper()
-        if value == "FULL_DAY":
-            value = "HELDAG"
-        if value not in db.VALID_TEST_RENTAL_TYPES:
-            self._invalid_field_error({"rentalType": "Must be HELDAG"})
-            return None
-        return value
-
-    def _validate_optional_test_date(self, raw_value: Optional[str]) -> Optional[str]:
-        value = (raw_value or "").strip()
-        if not value:
-            return datetime.now().strftime("%Y-%m-%d")
-        if not DATE_RE.match(value):
-            self._invalid_field_error({"date": "Expected format YYYY-MM-DD"})
-            return None
-        try:
-            datetime.strptime(value, "%Y-%m-%d")
-        except ValueError:
-            self._invalid_field_error({"date": "Invalid calendar date"})
-            return None
-        return value
-
-    def _test_price(self, trailer_type: str, rental_type: str, date_str: str) -> int:
-        price_trailer_type = "KAP" if trailer_type == "KAPS" else trailer_type
-        price_rental_type = "FULL_DAY" if rental_type == "HELDAG" else rental_type
-        day_start = datetime.strptime(f"{date_str}T00:00", "%Y-%m-%dT%H:%M")
-        return db.calculate_price(day_start, price_rental_type, price_trailer_type)
-
     def _trailer_label(self, trailer_type: str) -> str:
         return "Galler-släp" if trailer_type == "GALLER" else "Kåpsläp"
 
@@ -777,18 +696,6 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return parsed
 
-    def _process_due_test_bookings_if_relevant(self, path: str) -> None:
-        if not (
-            path.startswith("/api/admin/")
-            or path == "/api/health"
-            or path == "/api/payment-status"
-        ):
-            return
-        try:
-            process_due_test_bookings()
-        except Exception:
-            logger.exception("process_due_test_bookings failed path=%s", path)
-
     # ---- Request handlers ----
 
     def do_GET(self) -> None:
@@ -808,7 +715,6 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = parse_query(parsed.query)
-        self._process_due_test_bookings_if_relevant(path)
         if path.startswith("/api/dev/"):
             if not self.require_dev_auth(path=path, raw_query=parsed.query):
                 return
@@ -822,6 +728,8 @@ class Handler(BaseHTTPRequestHandler):
         # Root page
         if path in ("/", ""):
             return self.serve_file("index.html", "text/html; charset=utf-8")
+        if path == "/report-issue":
+            return self.serve_report_issue_page()
         if path == "/admin/login":
             return self.handle_admin_login_get()
         if path == "/admin":
@@ -852,8 +760,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_admin_bookings(query_params)
         if path == "/api/admin/blocks":
             return self.handle_admin_blocks_get(query_params)
-        if path == "/api/admin/test-bookings":
-            return self.handle_admin_test_bookings_get()
 
         # Dev/test endpoint
         if path == "/api/health":
@@ -897,7 +803,6 @@ class Handler(BaseHTTPRequestHandler):
         """
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        self._process_due_test_bookings_if_relevant(path)
         if path.startswith("/api/dev/"):
             if not self.require_dev_auth(path=path, raw_query=parsed.query):
                 return
@@ -976,6 +881,8 @@ class Handler(BaseHTTPRequestHandler):
         # Handle Swish Commerce callback
         if path == "/api/swish/callback":
             return self.handle_swish_callback()
+        if path == "/report-issue":
+            return self.handle_report_issue_submit()
         if path == "/admin/login":
             return self.handle_admin_login_post()
         if path == "/admin/logout":
@@ -989,10 +896,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_admin_blocks_create()
         if path == "/api/admin/expire-pending":
             return self.handle_admin_expire_pending()
-        if path == "/api/admin/test-bookings":
-            return self.handle_admin_test_bookings_create()
-        if path == "/api/admin/test-bookings/run":
-            return self.handle_admin_test_bookings_run()
 
         return self.end_json(404, {"error": "Not Found"})
 
@@ -1000,7 +903,6 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = parse_query(parsed.query)
-        self._process_due_test_bookings_if_relevant(path)
         if path.startswith("/api/dev/"):
             if not self.require_dev_auth(path=path, raw_query=parsed.query):
                 return
@@ -1381,90 +1283,6 @@ class Handler(BaseHTTPRequestHandler):
             + "</g></svg>"
         )
 
-    def _serialize_test_booking(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "id": row.get("id"),
-            "bookingReference": row.get("booking_reference"),
-            "status": row.get("status"),
-            "createdAt": row.get("created_at"),
-            "autoPaidAt": row.get("auto_paid_at"),
-            "deleteAt": row.get("delete_at"),
-            "trailerType": row.get("trailer_type"),
-            "rentalType": row.get("rental_type"),
-            "price": row.get("price"),
-            "smsAdminSentAt": row.get("sms_admin_sent_at"),
-            "smsTargetSentAt": row.get("sms_target_sent_at"),
-        }
-
-    def _build_test_receipt_preview(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        trailer_type = row.get("trailer_type") or "GALLER"
-        trailer_label = "Gallerslap" if trailer_type == "GALLER" else "Kapslap"
-        return {
-            "bookingReference": row.get("booking_reference"),
-            "status": row.get("status"),
-            "trailerType": trailer_type,
-            "trailerLabel": trailer_label,
-            "rentalType": row.get("rental_type"),
-            "date": (row.get("created_at") or "")[:10],
-            "price": row.get("price"),
-            "paidAt": row.get("auto_paid_at") if row.get("status") == "PAID" else None,
-        }
-
-    def handle_admin_test_bookings_create(self) -> None:
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            body = self.rfile.read(length) if length > 0 else b"{}"
-            data = json.loads(body.decode("utf-8"))
-        except Exception:
-            return self.api_error(400, "invalid_json", "Request body must be valid JSON", legacy_error="Invalid JSON")
-
-        sms_to = self._validate_required_test_phone(data.get("smsTo"))
-        trailer_type = self._validate_test_trailer_type(data.get("trailerType"))
-        rental_type = self._validate_test_rental_type(data.get("rentalType"))
-        date_str = self._validate_optional_test_date(data.get("date"))
-        if sms_to is None or trailer_type is None or rental_type is None or date_str is None:
-            return
-
-        try:
-            price = self._test_price(trailer_type, rental_type, date_str)
-            row = db.create_test_booking(
-                trailer_type=trailer_type,
-                rental_type=rental_type,
-                price=price,
-                sms_target_temp=sms_to,
-            )
-            # Force immediate fake-paid notification flow on creation.
-            process_due_test_bookings()
-        except ValueError as exc:
-            return self.api_error(400, "invalid_request", str(exc), legacy_error=str(exc))
-        except Exception as exc:
-            return self.api_error(500, "internal_error", "Internal server error", legacy_error=str(exc))
-
-        return self.end_json(
-            201,
-            {
-                "id": row.get("id"),
-                "bookingReference": row.get("booking_reference"),
-                "status": row.get("status"),
-                "autoPaidAt": row.get("auto_paid_at"),
-                "deleteAt": row.get("delete_at"),
-            },
-        )
-
-    def handle_admin_test_bookings_run(self) -> None:
-        summary = process_due_test_bookings()
-        return self.end_json(200, summary)
-
-    def handle_admin_test_bookings_get(self) -> None:
-        rows = db.list_test_bookings(limit=10)
-        payload_rows = []
-        for row in rows:
-            item = self._serialize_test_booking(row)
-            if row.get("status") == "PAID":
-                item["receiptPreview"] = self._build_test_receipt_preview(row)
-            payload_rows.append(item)
-        return self.end_json(200, {"testBookings": payload_rows})
-
     def handle_admin_bookings(self, params: Dict[str, str]) -> None:
         """Return booking rows for admin tooling."""
         status = params.get("status")
@@ -1736,6 +1554,467 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_error(400, "invalid_request", "status must be PAID or FAILED", legacy_error="invalid status")
         return self.end_json(200, {"ok": True, "bookingId": booking_id, "swishStatus": "PAID" if status == "PAID" else "FAILED"})
 
+    def _report_client_ip(self) -> str:
+        forwarded_for = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        if forwarded_for:
+            return forwarded_for
+        return (self.client_address[0] if self.client_address else "") or "unknown"
+
+    def _report_rate_limited(self, ip_address: str) -> bool:
+        now_ts = time.time()
+        recent = [
+            ts for ts in REPORT_RATE_LIMIT_BY_IP.get(ip_address, []) if now_ts - ts < REPORT_RATE_LIMIT_WINDOW_SECONDS
+        ]
+        if len(recent) >= REPORT_RATE_LIMIT_MAX_SUBMITS:
+            REPORT_RATE_LIMIT_BY_IP[ip_address] = recent
+            return True
+        recent.append(now_ts)
+        REPORT_RATE_LIMIT_BY_IP[ip_address] = recent
+        return False
+
+    def _report_issue_default_values(self) -> Dict[str, str]:
+        return {
+            "name": "",
+            "phone": "",
+            "email": "",
+            "trailer_type": "",
+            "booking_reference": "",
+            "detected_at": datetime.now().strftime("%Y-%m-%dT%H:%M"),
+            "report_type": "",
+            "message": "",
+            "website": "",
+        }
+
+    def _valid_report_email(self, value: str) -> bool:
+        return bool(value and len(value) <= EMAIL_MAX_LENGTH and "@" in value and "." in value.split("@")[-1])
+
+    def _render_report_issue_page(
+        self,
+        *,
+        values: Optional[Dict[str, str]] = None,
+        field_errors: Optional[Dict[str, str]] = None,
+        global_error: Optional[str] = None,
+        success_message: Optional[str] = None,
+    ) -> str:
+        form_values = self._report_issue_default_values()
+        if values:
+            form_values.update({k: (v or "") for k, v in values.items()})
+        errors = field_errors or {}
+        report_options_html = "".join(
+            [
+                f"<option value=\"{key}\" {'selected' if form_values.get('report_type') == key else ''}>{html_lib.escape(label)}</option>"
+                for key, label in REPORT_TYPE_LABELS.items()
+            ]
+        )
+        trailer_options_html = "<option value=\"\">Välj släp</option>" + "".join(
+            [
+                (
+                    f"<option value=\"{trailer}\" {'selected' if form_values.get('trailer_type') == trailer else ''}>"
+                    f"{html_lib.escape(self._trailer_label(trailer))}</option>"
+                )
+                for trailer in sorted(db.VALID_TRAILER_TYPES)
+            ]
+        )
+
+        def error_text(field_name: str) -> str:
+            value = errors.get(field_name)
+            if not value:
+                return ""
+            return f"<p class=\"field-error\">{html_lib.escape(value)}</p>"
+
+        success_html = (
+            f"<p class=\"alert success\">{html_lib.escape(success_message)}</p>" if success_message else ""
+        )
+        global_error_html = f"<p class=\"alert\">{html_lib.escape(global_error)}</p>" if global_error else ""
+        return f"""<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rapportera fel/skada – Dalsjöfors Hyrservice</title>
+  <link rel="stylesheet" href="/static/report.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>Dalsjöfors Hyrservice</h1>
+    <p>Rapportera fel eller skada på släp</p>
+    <nav class="site-nav" aria-label="Huvudmeny">
+      <a href="/">Boka släp</a>
+      <a href="/report-issue">Rapportera fel/skada</a>
+    </nav>
+  </header>
+  <main>
+    <section class="panel">
+      <h2>Rapportera fel/skada</h2>
+      <p class="intro">Skicka in uppgifterna nedan så återkommer vi så snart som möjligt.</p>
+      {success_html}
+      {global_error_html}
+      <form method="post" action="/report-issue" enctype="multipart/form-data" novalidate>
+        <div class="grid">
+          <label>
+            Namn
+            <input type="text" name="name" maxlength="120" required value="{html_lib.escape(form_values['name'])}" />
+            {error_text("name")}
+          </label>
+          <label>
+            Telefon
+            <input type="tel" name="phone" maxlength="40" required value="{html_lib.escape(form_values['phone'])}" />
+            {error_text("phone")}
+          </label>
+          <label>
+            E-post
+            <input type="email" name="email" maxlength="254" required value="{html_lib.escape(form_values['email'])}" />
+            {error_text("email")}
+          </label>
+          <label>
+            Välj släp
+            <select name="trailer_type" required>
+              {trailer_options_html}
+            </select>
+            {error_text("trailer_type")}
+          </label>
+          <label>
+            Bokningsreferens eller Booking ID
+            <input type="text" name="booking_reference" maxlength="80" value="{html_lib.escape(form_values['booking_reference'])}" />
+          </label>
+          <label>
+            Datum/tid när felet upptäcktes
+            <input type="datetime-local" name="detected_at" required value="{html_lib.escape(form_values['detected_at'])}" />
+            {error_text("detected_at")}
+          </label>
+          <label>
+            Typ av rapport
+            <select name="report_type" required>
+              <option value="">Välj typ</option>
+              {report_options_html}
+            </select>
+            {error_text("report_type")}
+          </label>
+          <label>
+            Bilder (1-6 valfria, jpg/png/webp, max 5 MB/st)
+            <input type="file" name="images" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple />
+            <p class="hint">Vid stora filer bifogas max 3 bilder automatiskt.</p>
+            {error_text("images")}
+          </label>
+          <label class="full">
+            Meddelande / beskrivning
+            <textarea name="message" required maxlength="5000">{html_lib.escape(form_values['message'])}</textarea>
+            {error_text("message")}
+          </label>
+          <label class="hp-field" aria-hidden="true">
+            Lämna detta fält tomt
+            <input type="text" name="website" tabindex="-1" autocomplete="off" value="{html_lib.escape(form_values['website'])}" />
+          </label>
+        </div>
+        <div class="actions">
+          <button type="submit">Skicka rapport</button>
+        </div>
+      </form>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <p>&copy; 2026 Dalsjöfors Hyrservice AB</p>
+    <p>Dalsjöfors Hyrservice AB • Org.nr: 559062-4556 • Boråsvägen 58B, 516 34 Dalsjöfors</p>
+  </footer>
+</body>
+</html>"""
+
+    def serve_report_issue_page(self) -> None:
+        html = self._render_report_issue_page()
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_issue_report_email(
+        self,
+        fields: Dict[str, str],
+        images: list[Dict[str, Any]],
+    ) -> bool:
+        smtp_host = (os.environ.get("SMTP_HOST") or "").strip()
+        smtp_port_raw = (os.environ.get("SMTP_PORT") or "").strip()
+        smtp_user = (os.environ.get("SMTP_USER") or "").strip()
+        smtp_password = (os.environ.get("SMTP_PASSWORD") or "").strip()
+        smtp_from = (os.environ.get("SMTP_FROM") or smtp_user or "").strip()
+        report_to = (os.environ.get("REPORT_TO") or "svenningsson@outlook.com").strip()
+        missing = []
+        if not smtp_host:
+            missing.append("SMTP_HOST")
+        if not smtp_port_raw:
+            missing.append("SMTP_PORT")
+        if not smtp_user:
+            missing.append("SMTP_USER")
+        if not smtp_password:
+            missing.append("SMTP_PASSWORD")
+        if not smtp_from:
+            missing.append("SMTP_FROM")
+        if missing:
+            logger.error("REPORT_SMTP_MISSING vars=%s", ",".join(missing))
+            return False
+        try:
+            smtp_port = int(smtp_port_raw)
+        except ValueError:
+            logger.error("REPORT_SMTP_INVALID_PORT value=%s", smtp_port_raw)
+            return False
+
+        report_type = REPORT_TYPE_LABELS.get(fields["report_type"], fields["report_type"])
+        subject = (
+            f"Skaderapport – {self._trailer_label(fields['trailer_type'])} – "
+            f"{fields['name']} – {fields['detected_at']}"
+        )
+        body_lines = [
+            "Ny fel/skaderapport",
+            "",
+            f"Namn: {fields['name']}",
+            f"Telefon: {fields['phone']}",
+            f"E-post: {fields['email']}",
+            f"Släp: {self._trailer_label(fields['trailer_type'])} ({fields['trailer_type']})",
+            f"Bokningsreferens/Booking ID: {fields.get('booking_reference') or '-'}",
+            f"Datum/tid upptäckt: {fields['detected_at']}",
+            f"Typ av rapport: {report_type}",
+            "",
+            "Meddelande:",
+            fields["message"],
+        ]
+
+        selected_images: list[Dict[str, Any]] = []
+        total_selected_bytes = 0
+        omitted_images = 0
+        for item in images:
+            payload = item["data"]
+            if len(selected_images) >= REPORT_MAX_ATTACHED_IMAGES:
+                omitted_images += 1
+                continue
+            if total_selected_bytes + len(payload) > REPORT_MAX_TOTAL_ATTACHMENT_BYTES:
+                omitted_images += 1
+                continue
+            selected_images.append(item)
+            total_selected_bytes += len(payload)
+        if omitted_images > 0:
+            body_lines.extend(
+                [
+                    "",
+                    (
+                        f"OBS: {omitted_images} bild(er) bifogades inte på grund av storleksgräns. "
+                        "Be kunden skicka fler bilder vid behov."
+                    ),
+                ]
+            )
+
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = smtp_from
+        message["To"] = report_to
+        message.set_content("\n".join(body_lines))
+        for item in selected_images:
+            major, subtype = str(item["content_type"]).split("/", 1)
+            message.add_attachment(item["data"], maintype=major, subtype=subtype, filename=item["filename"])
+
+        try:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as smtp:
+                smtp.ehlo()
+                if smtp.has_extn("starttls"):
+                    smtp.starttls()
+                    smtp.ehlo()
+                smtp.login(smtp_user, smtp_password)
+                smtp.send_message(message)
+            return True
+        except Exception:
+            logger.exception("REPORT_SMTP_SEND_FAILED to=%s", report_to)
+            return False
+
+    def handle_report_issue_submit(self) -> None:
+        content_type = (self.headers.get("Content-Type") or "").lower()
+        if "multipart/form-data" not in content_type:
+            return self.end_json(400, {"error": "Felaktigt format. Formuläret måste skickas som multipart/form-data."})
+
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = 0
+        if content_length <= 0 or content_length > 40 * 1024 * 1024:
+            html = self._render_report_issue_page(
+                global_error="För stor eller ogiltig förfrågan. Kontrollera bildernas storlek och försök igen."
+            )
+            body = html.encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": self.headers.get("Content-Type") or "",
+            },
+            keep_blank_values=True,
+        )
+
+        def field(name: str) -> str:
+            value = form.getfirst(name, "")
+            return str(value).strip()
+
+        values = {
+            "name": field("name"),
+            "phone": field("phone"),
+            "email": field("email").lower(),
+            "trailer_type": field("trailer_type").upper(),
+            "booking_reference": field("booking_reference"),
+            "detected_at": field("detected_at"),
+            "report_type": field("report_type").upper(),
+            "message": field("message"),
+            "website": field("website"),
+        }
+
+        if values["website"]:
+            html = self._render_report_issue_page(success_message="Rapport mottagen. Vi återkommer.")
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if self._report_rate_limited(self._report_client_ip()):
+            html = self._render_report_issue_page(
+                values=values,
+                global_error="För många försök just nu. Vänta en stund och försök igen.",
+            )
+            body = html.encode("utf-8")
+            self.send_response(429)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        errors: Dict[str, str] = {}
+        if not values["name"]:
+            errors["name"] = "Namn är obligatoriskt."
+        if not values["phone"]:
+            errors["phone"] = "Telefon är obligatoriskt."
+        if not values["email"]:
+            errors["email"] = "E-post är obligatorisk."
+        elif not self._valid_report_email(values["email"]):
+            errors["email"] = "Ange en giltig e-postadress."
+        if values["trailer_type"] not in db.VALID_TRAILER_TYPES:
+            errors["trailer_type"] = "Välj ett giltigt släp."
+        if not values["detected_at"]:
+            errors["detected_at"] = "Datum och tid är obligatoriskt."
+        else:
+            try:
+                datetime.strptime(values["detected_at"], "%Y-%m-%dT%H:%M")
+            except ValueError:
+                errors["detected_at"] = "Ange datum/tid i formatet ÅÅÅÅ-MM-DD TT:MM."
+        if values["report_type"] not in REPORT_TYPES:
+            errors["report_type"] = "Välj en rapporttyp."
+        if not values["message"]:
+            errors["message"] = "Beskrivning är obligatorisk."
+
+        raw_images = form["images"] if "images" in form else []
+        image_items = raw_images if isinstance(raw_images, list) else [raw_images]
+        image_payloads: list[Dict[str, Any]] = []
+        uploaded_count = 0
+        for item in image_items:
+            if not getattr(item, "filename", ""):
+                continue
+            uploaded_count += 1
+            if uploaded_count > REPORT_MAX_IMAGE_COUNT:
+                errors["images"] = f"Du kan ladda upp max {REPORT_MAX_IMAGE_COUNT} bilder."
+                break
+            original_name = Path(str(item.filename)).name
+            extension = Path(original_name).suffix.lower()
+            content_type_value = str(item.type or "").lower()
+            allowed_extensions = REPORT_ALLOWED_MIME_TYPES.get(content_type_value)
+            if not allowed_extensions or extension not in allowed_extensions:
+                errors["images"] = "Endast jpg, png eller webp är tillåtna."
+                break
+            payload = item.file.read(REPORT_MAX_IMAGE_BYTES + 1)
+            if len(payload) > REPORT_MAX_IMAGE_BYTES:
+                errors["images"] = "Varje bild får vara max 5 MB."
+                break
+            if not payload:
+                continue
+
+            target_extension = ".jpg" if content_type_value == "image/jpeg" else extension
+            target_payload = payload
+            target_content_type = content_type_value
+            try:
+                from PIL import Image  # type: ignore
+
+                with Image.open(BytesIO(payload)) as image:
+                    max_width = 1600
+                    if image.width > max_width:
+                        ratio = max_width / float(image.width)
+                        resized = image.resize((max_width, max(1, int(image.height * ratio))))
+                    else:
+                        resized = image
+                    buffer = BytesIO()
+                    if content_type_value == "image/png":
+                        resized.save(buffer, format="PNG", optimize=True)
+                        target_extension = ".png"
+                        target_content_type = "image/png"
+                    elif content_type_value == "image/webp":
+                        resized.save(buffer, format="WEBP", quality=85)
+                        target_extension = ".webp"
+                        target_content_type = "image/webp"
+                    else:
+                        if resized.mode not in {"RGB", "L"}:
+                            resized = resized.convert("RGB")
+                        resized.save(buffer, format="JPEG", quality=85, optimize=True)
+                        target_extension = ".jpg"
+                        target_content_type = "image/jpeg"
+                    target_payload = buffer.getvalue()
+            except Exception:
+                pass
+
+            image_payloads.append(
+                {
+                    "filename": f"report_{uuid.uuid4().hex}{target_extension}",
+                    "content_type": target_content_type,
+                    "data": target_payload,
+                }
+            )
+
+        if errors:
+            html = self._render_report_issue_page(values=values, field_errors=errors)
+            body = html.encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if not self._send_issue_report_email(values, image_payloads):
+            html = self._render_report_issue_page(
+                values=values,
+                global_error="Rapporten kunde inte skickas just nu. Försök igen senare.",
+            )
+            body = html.encode("utf-8")
+            self.send_response(500)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        html = self._render_report_issue_page(success_message="Rapport mottagen. Vi återkommer.")
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def serve_pay_page(self, params: Dict[str, str]) -> None:
         """Serve the payment page for a given booking ID.
 
@@ -1798,6 +2077,26 @@ class Handler(BaseHTTPRequestHandler):
       text-align: center;
     }}
     header h1 {{ margin: 0; font-size: clamp(1.5rem, 3.5vw, 2rem); }}
+    .site-nav {{
+      margin-top: 8px;
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }}
+    .site-nav a {{
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,.24);
+      background: rgba(255,255,255,.14);
+      color: #fff;
+      text-decoration: none;
+      font-weight: 700;
+    }}
     main {{ max-width: 700px; margin: 0 auto; padding: 16px 12px; }}
     .progress {{
       display: inline-flex;
@@ -1911,7 +2210,13 @@ class Handler(BaseHTTPRequestHandler):
     footer p {{ margin: 6px 0; }}
   </style>
 </head><body>
-<header><h1>Dalsjöfors Hyrservice</h1></header>
+<header>
+  <h1>Dalsjöfors Hyrservice</h1>
+  <nav class="site-nav" aria-label="Huvudmeny">
+    <a href="/">Boka släp</a>
+    <a href="/report-issue">Rapportera fel/skada</a>
+  </nav>
+</header>
 <main>
   <div class=\"progress\">Steg 4 av 5: Betalning</div>
   <div class=\"card\">
@@ -2060,6 +2365,26 @@ class Handler(BaseHTTPRequestHandler):
       text-align: center;
     }}
     header h1 {{ margin: 0; font-size: clamp(1.4rem, 3vw, 1.9rem); }}
+    .site-nav {{
+      margin-top: 8px;
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }}
+    .site-nav a {{
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,.24);
+      background: rgba(255,255,255,.14);
+      color: #fff;
+      text-decoration: none;
+      font-weight: 700;
+    }}
     main {{ max-width: 700px; margin: 0 auto; padding: 16px 12px; }}
     .progress {{
       display: inline-flex;
@@ -2122,7 +2447,13 @@ class Handler(BaseHTTPRequestHandler):
     footer p {{ margin: 6px 0; }}
   </style>
 </head><body>
-<header><h1>Bokningskvitto</h1></header>
+<header>
+  <h1>Bokningskvitto</h1>
+  <nav class="site-nav" aria-label="Huvudmeny">
+    <a href="/">Boka släp</a>
+    <a href="/report-issue">Rapportera fel/skada</a>
+  </nav>
+</header>
 <main>
   <div class=\"progress\">Steg 5 av 5: Bekräftelse</div>
   <div class=\"card\">

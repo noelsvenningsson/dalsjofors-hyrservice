@@ -135,58 +135,6 @@
       </div>
     </section>
 
-    <section class="panel" aria-label="Testbokning">
-      <div class="panel-header">
-        <h2>Testbokning (raderas efter 5 min)</h2>
-        <button type="button" id="refresh-test-bookings" class="button">Uppdatera testbokningar</button>
-      </div>
-
-      <form id="test-booking-form" class="filters" autocomplete="off">
-        <label>
-          Mobilnummer
-          <input type="tel" id="test-sms-to" placeholder="07xxxxxxxx eller +46..." required />
-        </label>
-        <label>
-          Släp
-          <select id="test-trailer-type">
-            <option value="GALLER">Galler</option>
-            <option value="KAPS">Kåp</option>
-          </select>
-        </label>
-        <label>
-          Datum
-          <input type="date" id="test-date" />
-        </label>
-        <label>
-          Hyrestyp
-          <select id="test-rental-type">
-            <option value="HELDAG">Heldag</option>
-          </select>
-        </label>
-        <div class="form-actions">
-          <button type="submit" class="button">Skapa testbokning</button>
-          <button type="button" id="run-test-bookings-now" class="button button-secondary">Kör kontroll nu</button>
-        </div>
-      </form>
-
-      <p id="test-bookings-feedback" class="feedback" role="status" aria-live="polite"></p>
-      <p id="latest-test-booking-result" class="feedback" role="status" aria-live="polite"></p>
-
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Referens</th>
-              <th>Status</th>
-              <th>Raderas om</th>
-              <th>Auto-PAID</th>
-              <th>Kvitto</th>
-            </tr>
-          </thead>
-          <tbody id="test-bookings-rows"></tbody>
-        </table>
-      </div>
-    </section>
   </main>
 
   <script src="/static/admin.js"></script>

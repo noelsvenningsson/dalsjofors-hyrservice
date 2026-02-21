@@ -67,7 +67,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const devPanel = document.getElementById('dev-panel');
   const debugInfo = document.getElementById('debug-info');
-  const devBookBtn = document.getElementById('dev-book');
   if (devMode) {
     devPanel.hidden = false;
   }
@@ -569,36 +568,6 @@ document.addEventListener('DOMContentLoaded', () => {
     state.receiptRequested = !!receiptRequestedInput.checked;
     syncReceiptEmailVisibility();
     updateSummary();
-  });
-
-  devBookBtn.addEventListener('click', () => {
-    if (!state.trailerType || !state.rentalType || !state.date) {
-      alert('Välj släp, hyrestid och datum först');
-      return;
-    }
-    const payload = {
-      trailerType: state.trailerType,
-      rentalType: state.rentalType,
-      date: state.date,
-      receiptRequested: false,
-      customerEmail: '',
-    };
-    if (state.rentalType === 'TWO_HOURS') payload.startTime = state.time;
-    fetch('/api/hold', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-      .then(res => res.json())
-      .then(data => {
-        if (data && data.bookingId) {
-          alert(`[dev] Bokning skapad med id ${data.bookingId}`);
-          updateAvailabilityCounts();
-        } else if (data && data.error) {
-          alert(`Fel: ${data.error}`);
-        }
-      })
-      .catch(() => alert('Fel vid dev-bokning'));
   });
 
   showStep(1);

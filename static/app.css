@@ -69,6 +69,33 @@ body {
   color: rgba(255, 255, 255, 0.9);
 }
 
+.site-nav {
+  margin-top: 0.85rem;
+  display: inline-flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.site-nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.52rem 0.8rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.site-nav a:hover,
+.site-nav a:focus-visible {
+  background: rgba(255, 255, 255, 0.24);
+}
+
 .site-footer {
   margin-top: 2.2rem;
   padding: 1.3rem 1rem;
@@ -135,6 +162,29 @@ main#wizard {
   margin: 0.45rem 0 1.05rem;
   color: var(--muted);
   font-size: 0.96rem;
+}
+
+.report-cta-wrap {
+  margin: -0.25rem 0 0.95rem;
+}
+
+.report-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.55rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid #c5d7e7;
+  background: #eef6ff;
+  color: #1b4f81;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.report-cta:hover,
+.report-cta:focus-visible {
+  background: #e4f0fc;
 }
 
 .trailers {
@@ -251,7 +301,7 @@ select,
 input[type="date"],
 input[type="email"] {
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
   padding: 0.45rem 0.55rem;
   border: 1px solid #c7d5e2;
   border-radius: var(--radius-sm);
@@ -367,7 +417,7 @@ input[type="email"]:focus-visible,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 42px;
+  min-height: 44px;
   padding: 0.5rem 0.9rem;
   border-radius: 10px;
   border: 1px solid transparent;
@@ -382,7 +432,7 @@ input[type="email"]:focus-visible,
 }
 
 #retry-payment {
-  min-height: 42px;
+  min-height: 44px;
   padding: 0.5rem 0.9rem;
   border-radius: 10px;
   border: 1px solid #b3c4d3;
@@ -480,6 +530,20 @@ input[type="email"]:focus-visible,
 
   .step {
     padding: 1rem;
+  }
+
+  .site-nav {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .site-nav a {
+    width: 100%;
+  }
+
+  .report-cta {
+    width: 100%;
   }
 
   .actions {
