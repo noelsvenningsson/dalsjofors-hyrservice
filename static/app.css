@@ -231,6 +231,16 @@ main#wizard {
   gap: 0.7rem;
 }
 
+.receipt-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hidden {
+  display: none !important;
+}
+
 .date-time-picker label {
   display: grid;
   gap: 0.32rem;

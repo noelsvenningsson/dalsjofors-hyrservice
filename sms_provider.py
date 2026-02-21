@@ -10,6 +10,7 @@ import urllib.request
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+_twilio_disabled_logged = False
 
 
 def normalize_swedish_mobile(raw_value: Optional[str]) -> Optional[str]:
@@ -36,16 +37,28 @@ def _env(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
+def _twilio_env_configured() -> bool:
+    return bool(_env("TWILIO_ACCOUNT_SID") and _env("TWILIO_AUTH_TOKEN") and _env("TWILIO_FROM_NUMBER"))
+
+
+def _log_twilio_disabled_once() -> None:
+    global _twilio_disabled_logged
+    if _twilio_disabled_logged:
+        return
+    logger.warning(
+        "SMS disabled: missing Twilio env vars (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER)."
+    )
+    _twilio_disabled_logged = True
+
+
 def send_sms(to_e164: str, message: str) -> bool:
     """Send SMS using Twilio env config. Returns False on any failure."""
+    if not _twilio_env_configured():
+        _log_twilio_disabled_once()
+        return False
     account_sid = _env("TWILIO_ACCOUNT_SID")
     auth_token = _env("TWILIO_AUTH_TOKEN")
     from_number = _env("TWILIO_FROM_NUMBER")
-    if not account_sid or not auth_token or not from_number:
-        logger.warning(
-            "SMS disabled: missing Twilio env vars (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_FROM_NUMBER)."
-        )
-        return False
 
     target = normalize_swedish_mobile(to_e164) if not to_e164.startswith("+") else to_e164
     if not target:
@@ -84,6 +97,8 @@ def send_sms(to_e164: str, message: str) -> bool:
 
 def get_admin_sms_number_e164() -> Optional[str]:
     """Resolve admin SMS number from env/default and normalize to E.164."""
+    if not _twilio_env_configured():
+        return None
     raw_number = _env("ADMIN_SMS_NUMBER") or "0709663485"
     normalized = normalize_swedish_mobile(raw_number)
     if not normalized:

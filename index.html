@@ -85,13 +85,14 @@
         <label id="time-container" hidden>Tid
           <select id="rental-time"></select>
         </label>
-        <label class="receipt-opt-in">
+        <div class="receipt-toggle">
           <input type="checkbox" id="receipt-requested">
-          Jag vill ha kvitto via e-post
-        </label>
-        <label id="customer-email-wrap" hidden>Mailadress för kvitto
+          <label for="receipt-requested">Jag vill ha kvitto via e-post</label>
+        </div>
+        <div id="receiptEmailWrap" class="hidden">
+          <label for="customer-email">Mailadress för kvitto</label>
           <input type="email" id="customer-email" placeholder="namn@exempel.se" autocomplete="email" maxlength="254">
-        </label>
+        </div>
         <p class="helper-text">Kvitto skickas bara om du väljer detta. Ingen reklam.</p>
       </div>
       <p id="availability-info" class="info"></p>

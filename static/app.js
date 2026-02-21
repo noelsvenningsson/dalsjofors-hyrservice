@@ -48,7 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const timeContainer = document.getElementById('time-container');
   const timeSelect = document.getElementById('rental-time');
   const receiptRequestedInput = document.getElementById('receipt-requested');
-  const customerEmailWrap = document.getElementById('customer-email-wrap');
+  const receiptEmailWrap = document.getElementById('receiptEmailWrap');
   const customerEmailInput = document.getElementById('customer-email');
   const availabilityInfo = document.getElementById('availability-info');
   const step3Back = document.getElementById('step3-back');
@@ -316,6 +316,9 @@ document.addEventListener('DOMContentLoaded', () => {
       receiptRequested: !!state.receiptRequested,
       customerEmail: state.receiptRequested ? (state.customerEmail || '') : '',
     };
+    if (state.receiptRequested) {
+      payload.receiptEmail = state.customerEmail || '';
+    }
     if (state.rentalType === 'TWO_HOURS') payload.startTime = state.time;
     return fetch('/api/hold', {
       method: 'POST',
@@ -492,6 +495,18 @@ document.addEventListener('DOMContentLoaded', () => {
     step3Next.disabled = true;
   });
 
+  function syncReceiptEmailVisibility() {
+    const receiptRequested = !!receiptRequestedInput.checked;
+    receiptEmailWrap.classList.toggle('hidden', !receiptRequested);
+    customerEmailInput.required = receiptRequested;
+    if (!receiptRequested) {
+      customerEmailInput.value = '';
+      customerEmailInput.setCustomValidity('');
+      state.customerEmail = null;
+      localStorage.removeItem('customerEmail');
+    }
+  }
+
   step3Back.addEventListener('click', () => {
     showStep(2);
   });
@@ -548,19 +563,11 @@ document.addEventListener('DOMContentLoaded', () => {
     state.customerEmail = storedCustomerEmail;
     customerEmailInput.value = storedCustomerEmail;
   }
-  customerEmailWrap.hidden = !state.receiptRequested;
-  customerEmailInput.required = state.receiptRequested;
+  syncReceiptEmailVisibility();
 
   receiptRequestedInput.addEventListener('change', () => {
     state.receiptRequested = !!receiptRequestedInput.checked;
-    customerEmailWrap.hidden = !state.receiptRequested;
-    customerEmailInput.required = state.receiptRequested;
-    if (!state.receiptRequested) {
-      customerEmailInput.value = '';
-      customerEmailInput.setCustomValidity('');
-      state.customerEmail = null;
-      localStorage.removeItem('customerEmail');
-    }
+    syncReceiptEmailVisibility();
     updateSummary();
   });
 
