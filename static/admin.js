@@ -27,30 +27,10 @@
     blocks: []
   };
 
-  function getAdminToken() {
-    const key = 'adminApiToken';
-    const existing = window.localStorage.getItem(key);
-    if (existing) return existing;
-    const entered = window.prompt('Ange ADMIN_TOKEN för admin-API:');
-    if (!entered) return '';
-    const trimmed = entered.trim();
-    if (!trimmed) return '';
-    window.localStorage.setItem(key, trimmed);
-    return trimmed;
-  }
-
   async function adminFetch(path, options) {
-    const token = getAdminToken();
     const requestOptions = Object.assign({ cache: 'no-store' }, options || {});
     requestOptions.headers = Object.assign({}, requestOptions.headers || {});
-    if (token) {
-      requestOptions.headers['X-Admin-Token'] = token;
-    }
-    const response = await fetch(path, requestOptions);
-    if (response.status === 401) {
-      window.localStorage.removeItem('adminApiToken');
-    }
-    return response;
+    return fetch(path, requestOptions);
   }
 
   function formatTrailer(type) {
@@ -186,7 +166,7 @@
 
     bookingsRowsEl.innerHTML = rows.map((row) => {
       const reference = row.bookingReference || ('Bokning #' + row.bookingId);
-      const detailsHref = '/confirm?bookingId=' + encodeURIComponent(row.bookingId);
+      const detailsHref = row.confirmUrl || ('/confirm?bookingId=' + encodeURIComponent(row.bookingId));
       return '<tr>' +
         '<td>' + escapeHtml(reference) + '</td>' +
         '<td>' + escapeHtml(formatTrailer(row.trailerType)) + '</td>' +

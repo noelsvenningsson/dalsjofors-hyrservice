@@ -2,6 +2,7 @@ import json
 import os
 import threading
 import unittest
+from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -142,6 +143,19 @@ class ApiValidationHardeningTest(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self._assert_stable_error(payload, expected_code="invalid_request", expected_field="startDatetime")
+
+    def test_hold_rejects_times_in_the_past(self) -> None:
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        status, payload = self._post_json(
+            "/api/hold",
+            {
+                "trailerType": "GALLER",
+                "rentalType": "FULL_DAY",
+                "date": yesterday,
+            },
+        )
+        self.assertEqual(status, 400)
+        self._assert_stable_error(payload, expected_code="invalid_request", expected_field="date")
 
 
 if __name__ == "__main__":

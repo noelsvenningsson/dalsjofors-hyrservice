@@ -146,6 +146,8 @@ class AdminDashboardApiTest(unittest.TestCase):
         self.assertIn("startDt", sample)
         self.assertIn("status", sample)
         self.assertIn("price", sample)
+        self.assertIn("confirmUrl", sample)
+        self.assertIn("/confirm?bookingId=", sample.get("confirmUrl", ""))
 
         confirmed_status, confirmed_payload = self._get_json(
             "/api/admin/bookings", {"status": "CONFIRMED"}

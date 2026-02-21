@@ -108,6 +108,7 @@ REPORT_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
 REPORT_RATE_LIMIT_MAX_SUBMITS = 5
 REPORT_RATE_LIMIT_BY_IP: Dict[str, list[float]] = {}
 MIN_WEBHOOK_SECRET_LENGTH = 32
+CONFIRM_LINK_MAX_AGE_SECONDS = 60 * 60 * 24 * 45
 
 
 def process_due_test_bookings(*, now: Optional[datetime] = None) -> Dict[str, int]:
@@ -515,6 +516,10 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def require_admin_api_auth(self) -> bool:
+        expected_password = get_admin_password()
+        if expected_password and self._has_valid_admin_session_cookie(expected_password):
+            return True
+
         expected_token = get_admin_token()
         if not expected_token:
             self.api_error(
@@ -550,6 +555,60 @@ class Handler(BaseHTTPRequestHandler):
         if scheme.lower() != "bearer" or not token.strip():
             return ""
         return token.strip()
+
+    def _confirm_link_secret(self) -> str:
+        return (
+            runtime.confirm_link_secret()
+            or get_admin_session_secret()
+            or runtime.webhook_secret()
+            or get_admin_token()
+        )
+
+    def _generate_confirm_token(self, booking_id: int, *, now_ts: Optional[int] = None) -> Optional[str]:
+        secret = self._confirm_link_secret()
+        if not secret:
+            return None
+        issued_at = now_ts if now_ts is not None else int(time.time())
+        expires_at = issued_at + CONFIRM_LINK_MAX_AGE_SECONDS
+        payload = f"v1|{booking_id}|{expires_at}"
+        signature = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        payload_b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+        return f"{payload_b64}.{signature}"
+
+    def _is_valid_confirm_token(self, booking_id: int, token: str, *, now_ts: Optional[int] = None) -> bool:
+        secret = self._confirm_link_secret()
+        if not secret or "." not in token:
+            return False
+        payload_b64, provided_signature = token.split(".", 1)
+        if not payload_b64 or not provided_signature:
+            return False
+        try:
+            payload_bytes = base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
+            payload = payload_bytes.decode("utf-8")
+        except Exception:
+            return False
+        expected_signature = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(provided_signature, expected_signature):
+            return False
+        parts = payload.split("|")
+        if len(parts) != 3 or parts[0] != "v1":
+            return False
+        try:
+            payload_booking_id = int(parts[1])
+            expires_at = int(parts[2])
+        except ValueError:
+            return False
+        if payload_booking_id != booking_id:
+            return False
+        current_ts = now_ts if now_ts is not None else int(time.time())
+        return current_ts <= expires_at
+
+    def _booking_confirm_url(self, booking_id: int) -> str:
+        token = self._generate_confirm_token(booking_id)
+        if not token:
+            return f"/confirm?bookingId={booking_id}"
+        encoded_token = urllib.parse.quote(token, safe="")
+        return f"/confirm?bookingId={booking_id}&token={encoded_token}"
 
     def require_dev_auth(self, *, path: str, raw_query: str) -> bool:
         params = parse_query(raw_query)
@@ -1604,6 +1663,7 @@ class Handler(BaseHTTPRequestHandler):
                     "createdAt": booking["created_at"],
                     "swishId": booking.get("swish_id"),
                     "expiresAt": booking.get("expires_at"),
+                    "confirmUrl": self._booking_confirm_url(int(booking["id"])),
                 }
             )
         return self.end_json(200, {"bookings": payload_rows})
@@ -1809,6 +1869,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             start_dt = datetime.strptime(f"{date_str}T{start_time}", "%Y-%m-%dT%H:%M")
             end_dt = start_dt + timedelta(hours=2)
+        now_dt = datetime.now()
+        if end_dt <= now_dt:
+            return self._invalid_field_error({"date": "Bokningstid måste ligga i framtiden"})
         # Create booking hold using existing logic
         try:
             booking_id, price = db.create_booking(
@@ -1866,6 +1929,7 @@ class Handler(BaseHTTPRequestHandler):
                 "bookingReference": booking.get("booking_reference") if booking else None,
                 "createdAt": booking.get("created_at") if booking else None,
                 "price": price,
+                "confirmUrl": self._booking_confirm_url(booking_id),
             },
         )
 
@@ -2725,6 +2789,18 @@ class Handler(BaseHTTPRequestHandler):
             booking_id = int(booking_id_str)
         except ValueError:
             return self.end_json(400, {"error": "bookingId must be an integer"})
+        token = (params.get("token") or "").strip()
+        if not self._is_valid_confirm_token(booking_id, token):
+            expected_password = get_admin_password()
+            has_admin_session = bool(
+                expected_password and self._has_valid_admin_session_cookie(expected_password)
+            )
+            if not has_admin_session:
+                return self.end_html_message(
+                    403,
+                    "Otillåten åtkomst",
+                    "Länken är ogiltig eller har löpt ut.",
+                )
         booking = db.get_booking_by_id(booking_id)
         if not booking:
             return self.end_json(404, {"error": "Booking not found"})
@@ -2746,7 +2822,6 @@ class Handler(BaseHTTPRequestHandler):
             f"Betalstatus: {(booking.get('swish_status') or 'PENDING').upper()}",
             f"Skapad: {booking.get('created_at') or '-'}",
             f"Swish-nummer: 1234 945580",
-            f"Kodlåskod: 6392",
         ]
         confirm_text = "\n".join(summary_lines)
         html = f"""
@@ -2854,7 +2929,6 @@ class Handler(BaseHTTPRequestHandler):
     <h2>Kvitto</h2>
     <textarea readonly id=\"confirm-text\">{confirm_text}</textarea>
     <button type=\"button\" id=\"copy-confirm\">Kopiera text</button>
-    <p class=\"code-note\">Kodlåskod: <strong>6392</strong></p>
   </div>
 </main>
 <footer>

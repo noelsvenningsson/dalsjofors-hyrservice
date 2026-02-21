@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
     swishStatus: null,
     pollTimer: null,
     holdPromise: null,
+    availabilityRequestSeq: 0,
   };
 
   const progressEl = document.getElementById('progress');
@@ -241,15 +242,18 @@ document.addEventListener('DOMContentLoaded', () => {
         opt.textContent = opt.value;
         return;
       }
-      if (slot.available) {
+      if (slot.available && typeof slot.remaining === 'number' && slot.remaining <= 1) {
         opt.disabled = false;
-        opt.textContent = `${opt.value} (${formatAvailableCount(slot.remaining)})`;
+        opt.textContent = `🟡 ${opt.value} (1/2)`;
+      } else if (slot.available) {
+        opt.disabled = false;
+        opt.textContent = opt.value;
       } else if (slot.blocked && slot.blockReason) {
         opt.disabled = true;
-        opt.textContent = `${opt.value} (Blockerad: ${slot.blockReason})`;
+        opt.textContent = `🔴 ${opt.value} (full)`;
       } else {
         opt.disabled = true;
-        opt.textContent = `${opt.value} (Fullbokat)`;
+        opt.textContent = `🔴 ${opt.value} (full)`;
       }
     });
 
@@ -276,7 +280,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return null;
   }
 
-  function updateTimeAvailabilityForDate() {
+  function updateTimeAvailabilityForDate(requestSeq) {
     if (!state.date || state.rentalType !== 'TWO_HOURS' || !state.trailerType) {
       return Promise.resolve();
     }
@@ -285,6 +289,7 @@ document.addEventListener('DOMContentLoaded', () => {
     )
       .then(res => res.json().then(data => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
+        if (requestSeq !== state.availabilityRequestSeq) return;
         if (!ok || !Array.isArray(data.slots)) {
           throw new Error('Kunde inte läsa tider');
         }
@@ -292,6 +297,7 @@ document.addEventListener('DOMContentLoaded', () => {
         applyTimeSlotAvailability();
       })
       .catch(() => {
+        if (requestSeq !== state.availabilityRequestSeq) return;
         state.slotAvailability = [];
       });
   }
@@ -319,16 +325,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateAvailabilityCounts() {
     if (!state.date || !state.rentalType) return;
-    const availabilityPromise = state.rentalType === 'TWO_HOURS' ? updateTimeAvailabilityForDate() : Promise.resolve();
+    const requestSeq = state.availabilityRequestSeq + 1;
+    state.availabilityRequestSeq = requestSeq;
+    const availabilityPromise = state.rentalType === 'TWO_HOURS'
+      ? updateTimeAvailabilityForDate(requestSeq)
+      : Promise.resolve();
     if (state.trailerType) {
       setInfoState(availabilityInfo, 'Kontrollerar tillgänglighet …', 'loading');
     }
     availabilityPromise.finally(() => {
+      if (requestSeq !== state.availabilityRequestSeq) return;
       const timeParam = state.rentalType === 'TWO_HOURS' && state.time ? `&startTime=${encodeURIComponent(state.time)}` : '';
       ['GALLER', 'KAP'].forEach(type => {
         fetch(`/api/availability?trailerType=${type}&rentalType=${state.rentalType}&date=${state.date}${timeParam}`)
           .then(res => res.json())
           .then(data => {
+            if (requestSeq !== state.availabilityRequestSeq) return;
             state.remainingByType[type] = data.remaining;
             const el = document.getElementById(`availability-${type.toLowerCase()}`);
             if (el) {
@@ -344,6 +356,7 @@ document.addEventListener('DOMContentLoaded', () => {
             updateDebugInfo();
           })
           .catch(() => {
+            if (requestSeq !== state.availabilityRequestSeq) return;
             if (state.trailerType === type) {
               setInfoState(availabilityInfo, 'Kunde inte läsa tillgänglighet', 'error');
             }
@@ -657,6 +670,15 @@ document.addEventListener('DOMContentLoaded', () => {
   dateInput.addEventListener('change', () => {
     setFieldError(dateError, '');
     state.date = dateInput.value;
+    const today = new Date().toISOString().slice(0, 10);
+    if (state.date && state.date < today) {
+      setFieldError(dateError, 'Datum måste vara idag eller senare.');
+      state.date = null;
+      dateInput.value = '';
+      step3Next.disabled = true;
+      setInfoState(availabilityInfo, '', null);
+      return;
+    }
     updatePriceInfo();
     if (state.rentalType === 'TWO_HOURS') {
       state.time = timeSelect.value;
@@ -773,4 +795,5 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   showStep(1);
+  dateInput.min = new Date().toISOString().slice(0, 10);
 });

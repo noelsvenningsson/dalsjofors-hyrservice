@@ -186,8 +186,10 @@ class BookingReferenceFlowTest(unittest.TestCase):
         matching = [row for row in admin.get("bookings", []) if row.get("bookingId") == old_booking_id]
         self.assertEqual(len(matching), 1)
         self.assertIsNone(matching[0].get("bookingReference"))
+        confirm_url = matching[0].get("confirmUrl")
+        self.assertTrue(confirm_url)
 
-        with urlopen(f"{self._base_url}/confirm?bookingId={old_booking_id}") as resp:
+        with urlopen(f"{self._base_url}{confirm_url}") as resp:
             self.assertEqual(resp.status, 200)
             html = resp.read().decode("utf-8")
         self.assertIn("Bokningsreferens: saknas", html)

@@ -56,6 +56,10 @@ def webhook_secret() -> str:
     return env_first("WEBHOOK_SECRET", "NOTIFY_WEBHOOK_SECRET")
 
 
+def confirm_link_secret() -> str:
+    return env_first("CONFIRM_LINK_SECRET")
+
+
 def admin_token() -> str:
     return env_first("ADMIN_TOKEN")
 
