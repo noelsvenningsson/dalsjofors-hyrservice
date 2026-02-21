@@ -44,8 +44,9 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from config.holidays import is_weekend_or_holiday
+from config import runtime
 
-DB_PATH = Path(__file__).resolve().parent / "database.db"
+DB_PATH = runtime.db_path(Path(__file__).resolve().parent / "database.db")
 PENDING_PAYMENT_EXPIRATION_MINUTES = 15
 TRAILERS_PER_TYPE = 2
 SWISH_PENDING_STATUSES = {"PENDING", "CREATED"}

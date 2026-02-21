@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DB_PATH="${ROOT_DIR}/database.db"
+DB_PATH="${DATABASE_PATH:-${ROOT_DIR}/database.db}"
 BACKUP_DIR="${ROOT_DIR}/backups"
 
 mkdir -p "${BACKUP_DIR}"

@@ -73,6 +73,7 @@ import db
 import notifications
 import requests
 import sms_provider
+from config import runtime
 from qrcodegen import QrCode
 from swish_client import SwishClient, SwishConfig
 
@@ -106,6 +107,46 @@ REPORT_MAX_WEBHOOK_PAYLOAD_BYTES = 10 * 1024 * 1024
 REPORT_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
 REPORT_RATE_LIMIT_MAX_SUBMITS = 5
 REPORT_RATE_LIMIT_BY_IP: Dict[str, list[float]] = {}
+MIN_WEBHOOK_SECRET_LENGTH = 32
+
+
+def process_due_test_bookings(*, now: Optional[datetime] = None) -> Dict[str, int]:
+    """Process ephemeral test bookings (SMS dispatch and auto-delete)."""
+    effective_now = now or datetime.now()
+    processed_paid = 0
+
+    due_paid = db.get_due_test_bookings_for_auto_paid(effective_now)
+    for row in due_paid:
+        test_booking_id = int(row.get("id") or 0)
+        if test_booking_id and db.mark_test_booking_paid(test_booking_id, now=effective_now):
+            processed_paid += 1
+
+    paid_rows = db.get_paid_test_bookings_pending_sms(effective_now)
+    for row in paid_rows:
+        test_booking_id = int(row.get("id") or 0)
+        booking_reference = row.get("booking_reference") or f"TEST-{test_booking_id}"
+        trailer_type = row.get("trailer_type") or ""
+        rental_type = row.get("rental_type") or ""
+        price = int(row.get("price") or 0)
+
+        if row.get("sms_admin_sent_at") is None:
+            admin_number = sms_provider.get_admin_sms_number_e164()
+            if admin_number:
+                admin_msg = (
+                    f"TEST bokning PAID: {booking_reference} | {trailer_type} | {rental_type} | {price} kr"
+                )
+                if sms_provider.send_sms(admin_number, admin_msg):
+                    db.mark_test_sms_admin_sent(test_booking_id, sent_at=effective_now.isoformat(timespec="seconds"))
+
+        if row.get("sms_target_temp") and row.get("sms_target_sent_at") is None:
+            target_msg = (
+                f"Dalsjofors Hyrservice AB: TEST bokningskvitto {booking_reference} | {trailer_type} | {rental_type} | {price} kr"
+            )
+            if sms_provider.send_sms(str(row.get("sms_target_temp")), target_msg):
+                db.mark_test_sms_target_sent(test_booking_id, sent_at=effective_now.isoformat(timespec="seconds"))
+
+    deleted = db.delete_due_test_bookings(effective_now)
+    return {"processedPaid": processed_paid, "deleted": deleted}
 
 
 def _debug_swish_enabled() -> bool:
@@ -137,15 +178,15 @@ def is_production_environment() -> bool:
 
 
 def get_admin_token() -> str:
-    return (os.environ.get("ADMIN_TOKEN") or "").strip()
+    return runtime.admin_token()
 
 
 def get_admin_password() -> str:
-    return (os.environ.get("ADMIN_PASSWORD") or "").strip()
+    return runtime.admin_password()
 
 
 def get_admin_session_secret() -> str:
-    return (os.environ.get("ADMIN_SESSION_SECRET") or "").strip()
+    return runtime.admin_session_secret()
 
 
 def _constant_time_secret_match(provided_value: str, expected_value: str) -> bool:
@@ -230,12 +271,25 @@ class Handler(BaseHTTPRequestHandler):
         # Silence default logging
         return
 
+    def _request_id(self) -> str:
+        value = getattr(self, "_request_id_value", "")
+        if value:
+            return value
+        incoming = (self.headers.get("X-Request-Id") or "").strip()
+        if incoming and re.match(r"^[A-Za-z0-9._:-]{1,64}$", incoming):
+            rid = incoming
+        else:
+            rid = uuid.uuid4().hex
+        self._request_id_value = rid
+        return rid
+
     def end_json(self, code: int, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
         self.wfile.write(body)
 
@@ -249,6 +303,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
         self.wfile.write(body)
 
@@ -265,6 +320,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(303)
         self.send_header("Location", location)
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-Id", self._request_id())
         if set_cookie:
             self.send_header("Set-Cookie", set_cookie)
         self.end_headers()
@@ -392,6 +448,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
         self.wfile.write(body)
 
@@ -424,6 +481,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Request-Id", self._request_id())
             self.end_headers()
             self.wfile.write(body)
             return
@@ -724,7 +782,7 @@ class Handler(BaseHTTPRequestHandler):
                 booking_reference,
             )
             return
-        if not (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip():
+        if not runtime.notify_webhook_url():
             logger.info(
                 "RECEIPT_WEBHOOK_SKIP reason=missing_env bookingId=%s bookingReference=%s",
                 booking_id,
@@ -778,6 +836,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = parse_query(parsed.query)
+        logger.info("REQUEST method=GET path=%s requestId=%s", path, self._request_id())
         if path.startswith("/api/dev/"):
             if not self.require_dev_auth(path=path, raw_query=parsed.query):
                 return
@@ -830,6 +889,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
         if path == "/api/admin/bookings":
             return self.handle_admin_bookings(query_params)
+        if path == "/api/admin/test-bookings":
+            return self.handle_admin_test_bookings_get(query_params)
         if path == "/api/admin/blocks":
             return self.handle_admin_blocks_get(query_params)
 
@@ -840,7 +901,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "service": "dalsjofors-hyrservice",
-                    "commit": "8fdf328",
+                    "commit": self._resolve_commit_value(),
                     "time": datetime.now().isoformat(timespec="seconds"),
                 },
             )
@@ -857,6 +918,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = parse_query(parsed.query)
+        logger.info("REQUEST method=HEAD path=%s requestId=%s", path, self._request_id())
         if path.startswith("/api/dev/"):
             if not self.require_dev_auth(path=path, raw_query=parsed.query):
                 return
@@ -864,6 +926,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_swish_qr(query_params, head_only=True)
         self.send_response(404)
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
 
     def do_POST(self) -> None:
@@ -875,6 +938,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        logger.info("REQUEST method=POST path=%s requestId=%s", path, self._request_id())
         if path.startswith("/api/dev/"):
             if not self.require_dev_auth(path=path, raw_query=parsed.query):
                 return
@@ -966,6 +1030,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
         if path == "/api/admin/blocks":
             return self.handle_admin_blocks_create()
+        if path == "/api/admin/test-bookings":
+            return self.handle_admin_test_bookings_create()
+        if path == "/api/admin/test-bookings/run":
+            return self.handle_admin_test_bookings_run()
         if path == "/api/admin/expire-pending":
             return self.handle_admin_expire_pending()
 
@@ -975,6 +1043,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = parse_query(parsed.query)
+        logger.info("REQUEST method=DELETE path=%s requestId=%s", path, self._request_id())
         if path.startswith("/api/dev/"):
             if not self.require_dev_auth(path=path, raw_query=parsed.query):
                 return
@@ -1065,20 +1134,23 @@ class Handler(BaseHTTPRequestHandler):
         return self.end_json(200, {"available": available, "remaining": remaining})
 
     def _swish_mode(self) -> str:
-        return (os.environ.get("SWISH_MODE") or "mock").strip().lower()
+        return runtime.swish_mode()
 
     def _swish_client(self) -> SwishClient:
         return SwishClient(
             SwishConfig(
-                base_url=(os.environ.get("SWISH_COMMERCE_BASE_URL") or "mock"),
-                merchant_alias=(os.environ.get("SWISH_COMMERCE_MERCHANT_ALIAS") or "1234945580"),
+                base_url=runtime.swish_api_url(),
+                merchant_alias=runtime.swish_merchant_alias(),
                 callback_url=self._swish_callback_url(),
+                cert_path=runtime.swish_cert_path() or None,
+                key_path=runtime.swish_key_path() or None,
+                ca_path=runtime.swish_ca_path() or None,
                 mock=self._swish_mode() == "mock",
             )
         )
 
     def _swish_callback_url(self) -> str:
-        configured = (os.environ.get("SWISH_COMMERCE_CALLBACK_URL") or "").strip()
+        configured = runtime.swish_callback_url()
         if configured:
             return configured
         host = self.headers.get("Host") or "localhost:8000"
@@ -1315,11 +1387,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_dev_report_webhook_test(self) -> None:
         webhook_url = (
-            (os.environ.get("REPORT_WEBHOOK_URL") or "").strip()
-            or (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip()
+            runtime.report_webhook_url()
+            or runtime.notify_webhook_url()
         )
-        report_to = (os.environ.get("REPORT_TO") or "svenningsson@outlook.com").strip()
-        webhook_secret = (os.environ.get("NOTIFY_WEBHOOK_SECRET") or "").strip()
+        report_to = runtime.report_to()
+        webhook_secret = runtime.webhook_secret()
         report_id = str(uuid.uuid4())
         submitted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if not webhook_url:
@@ -1420,6 +1492,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
         if not head_only:
             self.wfile.write(body)
@@ -1484,6 +1557,74 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
         return self.end_json(200, {"bookings": payload_rows})
+
+    def handle_admin_test_bookings_get(self, params: Dict[str, str]) -> None:
+        limit_raw = (params.get("limit") or "").strip()
+        limit = 10
+        if limit_raw:
+            try:
+                limit = max(1, min(100, int(limit_raw)))
+            except ValueError:
+                return self._invalid_field_error({"limit": "Must be an integer"})
+        rows = db.list_test_bookings(limit=limit)
+        payload_rows = []
+        for row in rows:
+            payload_rows.append(
+                {
+                    "id": row.get("id"),
+                    "bookingReference": row.get("booking_reference"),
+                    "trailerType": row.get("trailer_type"),
+                    "rentalType": row.get("rental_type"),
+                    "price": row.get("price"),
+                    "status": row.get("status"),
+                    "createdAt": row.get("created_at"),
+                }
+            )
+        return self.end_json(200, {"testBookings": payload_rows})
+
+    def handle_admin_test_bookings_create(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length) if length > 0 else b"{}"
+            data = json.loads(body.decode("utf-8"))
+        except Exception:
+            return self.api_error(400, "invalid_json", "Request body must be valid JSON", legacy_error="Invalid JSON")
+
+        sms_to = (data.get("smsTo") or "").strip()
+        trailer_type = (data.get("trailerType") or "").strip().upper()
+        rental_type = (data.get("rentalType") or "").strip().upper()
+        date_raw = (data.get("date") or "").strip()
+        if not sms_to:
+            return self._invalid_field_error({"smsTo": "This field is required"})
+        sms_to_e164 = sms_provider.normalize_swedish_mobile(sms_to)
+        if not sms_to_e164:
+            return self._invalid_field_error({"smsTo": "Ange svensk mobil: +46xxxxxxxxx eller 07xxxxxxxx"})
+        if trailer_type not in db.VALID_TEST_TRAILER_TYPES:
+            return self._invalid_field_error({"trailerType": f"Must be one of: {', '.join(sorted(db.VALID_TEST_TRAILER_TYPES))}"})
+        if rental_type not in db.VALID_TEST_RENTAL_TYPES:
+            return self._invalid_field_error({"rentalType": f"Must be one of: {', '.join(sorted(db.VALID_TEST_RENTAL_TYPES))}"})
+        if not DATE_RE.match(date_raw):
+            return self._invalid_field_error({"date": "Expected format YYYY-MM-DD"})
+
+        price = 250
+        created_row = db.create_test_booking(
+            trailer_type=trailer_type,
+            rental_type=rental_type,
+            price=price,
+            sms_target_temp=sms_to_e164,
+        )
+        return self.end_json(
+            201,
+            {
+                "id": created_row.get("id"),
+                "bookingReference": created_row.get("booking_reference"),
+                "status": created_row.get("status"),
+            },
+        )
+
+    def handle_admin_test_bookings_run(self) -> None:
+        result = process_due_test_bookings()
+        return self.end_json(200, result)
 
     def handle_admin_blocks_get(self, params: Dict[str, str]) -> None:
         start_dt_str = params.get("startDatetime")
@@ -1681,16 +1822,30 @@ class Handler(BaseHTTPRequestHandler):
     def handle_swish_callback(self) -> None:
         """Handle Swish callback payload.
 
-        TODO: In live mode, verify Swish callback authenticity (mTLS/signature)
-        and map full Commerce payload fields before mutating booking state.
+        In mock mode, callback is open for local/test flows.
+        In non-mock mode, callback requires webhook secret validation and is
+        intended to be used behind TLS/mTLS-capable infrastructure.
         """
         if self._swish_mode() != "mock":
-            return self.api_error(
-                501,
-                "not_implemented",
-                "Swish callback verification requires cert configuration",
-                legacy_error="cert not configured",
+            expected_secret = runtime.webhook_secret()
+            if not expected_secret:
+                return self.api_error(
+                    500,
+                    "server_misconfigured",
+                    "Server misconfigured",
+                    legacy_error="Server misconfigured",
+                )
+            provided_secret = (
+                (self.headers.get("X-Webhook-Secret") or "").strip()
+                or (self.headers.get("X-Swish-Webhook-Secret") or "").strip()
             )
+            if not provided_secret or not hmac.compare_digest(provided_secret, expected_secret):
+                return self.api_error(
+                    401,
+                    "unauthorized",
+                    "Unauthorized",
+                    legacy_error="Unauthorized",
+                )
         try:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length > 0 else b"{}"
@@ -1698,8 +1853,9 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self.api_error(400, "invalid_json", "Request body must be valid JSON", legacy_error="Invalid JSON")
 
-        booking_id = data.get("paymentReference") or data.get("bookingId")
-        status = (data.get("status") or "").upper()
+        booking_id = data.get("paymentReference") or data.get("bookingId") or data.get("id")
+        status_raw = str(data.get("status") or data.get("paymentStatus") or "").upper()
+        status = "PAID" if status_raw in {"PAID", "COMPLETED"} else status_raw
         if not booking_id:
             return self.api_error(400, "invalid_request", "paymentReference is required", legacy_error="paymentReference is required")
         try:
@@ -1901,6 +2057,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
         self.wfile.write(body)
 
@@ -1910,11 +2067,11 @@ class Handler(BaseHTTPRequestHandler):
         images: list[Dict[str, Any]],
     ) -> bool:
         webhook_url = (
-            (os.environ.get("REPORT_WEBHOOK_URL") or "").strip()
-            or (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip()
+            runtime.report_webhook_url()
+            or runtime.notify_webhook_url()
         )
-        report_to = (os.environ.get("REPORT_TO") or "svenningsson@outlook.com").strip()
-        webhook_secret = (os.environ.get("NOTIFY_WEBHOOK_SECRET") or "").strip()
+        report_to = runtime.report_to()
+        webhook_secret = runtime.webhook_secret()
         report_id = str(uuid.uuid4())
         submitted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if not webhook_url:
@@ -2063,6 +2220,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(400)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Request-Id", self._request_id())
             self.end_headers()
             self.wfile.write(body)
             return
@@ -2078,6 +2236,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(400)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Request-Id", self._request_id())
             self.end_headers()
             self.wfile.write(body)
             return
@@ -2104,6 +2263,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Request-Id", self._request_id())
             self.end_headers()
             self.wfile.write(body)
             return
@@ -2117,6 +2277,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(429)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Request-Id", self._request_id())
             self.end_headers()
             self.wfile.write(body)
             return
@@ -2216,6 +2377,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(400)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Request-Id", self._request_id())
             self.end_headers()
             self.wfile.write(body)
             return
@@ -2229,6 +2391,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(500)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Request-Id", self._request_id())
             self.end_headers()
             self.wfile.write(body)
             return
@@ -2238,6 +2401,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
         self.wfile.write(body)
 
@@ -2492,6 +2656,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
         self.wfile.write(body)
 
@@ -2743,6 +2908,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
         self.wfile.write(data)
 
@@ -2759,6 +2925,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-Id", self._request_id())
         self.end_headers()
         try:
             self.wfile.write(data)
@@ -2776,7 +2943,13 @@ def run() -> None:
         raise RuntimeError("ADMIN_PASSWORD is required in production environments")
     if is_production_environment() and not get_admin_session_secret():
         raise RuntimeError("ADMIN_SESSION_SECRET is required in production environments")
-    port = int(os.environ.get("PORT", "8000"))
+    if is_production_environment():
+        webhook_secret = runtime.webhook_secret()
+        if len(webhook_secret) < MIN_WEBHOOK_SECRET_LENGTH:
+            raise RuntimeError(
+                f"WEBHOOK_SECRET must be at least {MIN_WEBHOOK_SECRET_LENGTH} characters in production environments"
+            )
+    port = runtime.port()
     server = HTTPServer(("0.0.0.0", port), Handler)
     print(f"Running Dalsjöfors Hyrservice on http://localhost:{port}")
     server.serve_forever()

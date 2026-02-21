@@ -11,13 +11,13 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import time
 import urllib.request
 from typing import Any, Protocol
 
 import db
 import requests
+from config import runtime
 
 logger = logging.getLogger(__name__)
 
@@ -169,13 +169,13 @@ def send_receipt_webhook(booking: dict[str, Any]) -> bool:
     if not receipt_requested or not customer_email:
         return False
 
-    webhook_url = (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip()
+    webhook_url = runtime.notify_webhook_url()
     if not webhook_url:
         logger.info("WEBHOOK_DISABLED event=booking.confirmed bookingReference=%s", booking.get("booking_reference"))
         return False
 
     payload = {
-        "secret": (os.environ.get("NOTIFY_WEBHOOK_SECRET") or "").strip(),
+        "secret": runtime.webhook_secret(),
         "receiptRequested": True,
         "customerEmail": customer_email,
         "event": "booking.confirmed",

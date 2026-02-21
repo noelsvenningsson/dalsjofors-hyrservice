@@ -72,20 +72,30 @@ Systemet är arkitektoniskt förberett för Swish mTLS-certifikat. Certifikat oc
 ## 7. Miljövariabler
 | Variabel | Beskrivning |
 | --- | --- |
-| `SWISH_API_URL` | Bas-URL till Swish Commerce API (i nuvarande implementation används `SWISH_COMMERCE_BASE_URL`). |
-| `SWISH_CERT_PATH` | Sökväg till klientcertifikat för mTLS (i nuvarande implementation `SWISH_COMMERCE_CERT_PATH`). |
-| `SWISH_KEY_PATH` | Sökväg till privat nyckel för mTLS (i nuvarande implementation `SWISH_COMMERCE_KEY_PATH`). |
+| `SWISH_API_URL` | Bas-URL till Swish Commerce API. |
+| `SWISH_CERT_PATH` | Sökväg till klientcertifikat för mTLS. |
+| `SWISH_KEY_PATH` | Sökväg till privat nyckel för mTLS. |
 | `SWISH_CA_PATH` | Sökväg till CA-certifikat för verifiering av Swish endpoint i produktionsmiljö. |
-| `WEBHOOK_SECRET` | Delad hemlighet för webhook-validering (i nuvarande implementation `NOTIFY_WEBHOOK_SECRET`). |
+| `WEBHOOK_SECRET` | Delad hemlighet för webhook-validering. |
 | `REPORT_WEBHOOK_URL` | Endpoint för fel-/skaderapporter och relaterade notifieringar. |
 | `ADMIN_TOKEN` | Bearer-token som skyddar admin- och dev-endpoints. |
 | `DATABASE_PATH` | Sökväg till SQLite-databas (standard är lokal `database.db`). |
+
+Följande alias stöds för bakåtkompatibilitet: `SWISH_COMMERCE_BASE_URL`, `SWISH_COMMERCE_CERT_PATH`, `SWISH_COMMERCE_KEY_PATH`, `SWISH_COMMERCE_CALLBACK_URL`, `NOTIFY_WEBHOOK_SECRET`.
 
 ## 8. Drift
 - Python 3.13
 - Render-hosting
 - SQLite
 - HTTPS via hostingplattform
+- Databasbackup kan köras med `./scripts/backup_db.sh`
+- Backupfiler sparas i `backups/`
 
 ## 9. Status
 Systemet är produktionsklart för Swish Commerce-integration. Mock-flöde används i testmiljö. Produktion sker via mTLS när bankavtal är aktiverat.
+
+## Kompletterande dokumentation
+- `docs/SWISH_COMMERCE_READINESS.md`
+- `docs/SECURITY_OPERATIONS.md`
+- `docs/BACKUP_RESTORE.md`
+- `docs/RELEASE_GATE.md`
