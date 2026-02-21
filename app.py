@@ -58,10 +58,11 @@ import hashlib
 import html as html_lib
 import time
 import base64
-import cgi
 import smtplib
 import uuid
 from datetime import datetime, timedelta
+from email.parser import BytesParser
+from email.policy import default
 from email.message import EmailMessage
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -156,6 +157,67 @@ def parse_query(query: str) -> Dict[str, str]:
     """Parse a URL query string into a dict of first values."""
     parsed = urllib.parse.parse_qs(query, keep_blank_values=True)
     return {k: v[0] for k, v in parsed.items() if v}
+
+
+def parse_form_data(content_type: str, body: bytes) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Parse multipart or urlencoded form data without third-party dependencies."""
+    normalized_content_type = (content_type or "").strip()
+    lowered = normalized_content_type.lower()
+
+    if lowered.startswith("multipart/form-data"):
+        pseudo = (
+            b"Content-Type: "
+            + normalized_content_type.encode("utf-8", errors="ignore")
+            + b"\r\nMIME-Version: 1.0\r\n\r\n"
+            + body
+        )
+        try:
+            message = BytesParser(policy=default).parsebytes(pseudo)
+        except Exception as exc:
+            raise ValueError("could_not_parse_multipart") from exc
+
+        if not message.is_multipart():
+            raise ValueError("invalid_multipart")
+
+        fields: dict[str, str] = {}
+        files: list[dict[str, Any]] = []
+        for part in message.iter_parts():
+            if part.get_content_disposition() != "form-data":
+                continue
+
+            field_name = part.get_param("name", header="content-disposition")
+            if not field_name:
+                continue
+
+            filename = part.get_filename()
+            payload = part.get_payload(decode=True) or b""
+            if filename:
+                files.append(
+                    {
+                        "field_name": str(field_name),
+                        "filename": str(filename),
+                        "content_type": (part.get_content_type() or "application/octet-stream").lower(),
+                        "data_bytes": payload,
+                        "size": len(payload),
+                    }
+                )
+                continue
+
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                text = payload.decode(charset, errors="replace")
+            except LookupError:
+                text = payload.decode("utf-8", errors="replace")
+            fields[str(field_name)] = text.strip()
+        return fields, files
+
+    if lowered.startswith("application/x-www-form-urlencoded"):
+        query = body.decode("utf-8", errors="replace")
+        parsed = urllib.parse.parse_qs(query, keep_blank_values=True)
+        fields = {key: (values[0] if values else "").strip() for key, values in parsed.items()}
+        return fields, []
+
+    raise ValueError("unsupported_content_type")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1827,9 +1889,21 @@ class Handler(BaseHTTPRequestHandler):
             return False
 
     def handle_report_issue_submit(self) -> None:
-        content_type = (self.headers.get("Content-Type") or "").lower()
-        if "multipart/form-data" not in content_type:
-            return self.end_json(400, {"error": "Felaktigt format. Formuläret måste skickas som multipart/form-data."})
+        content_type_header = self.headers.get("Content-Type") or ""
+        content_type = content_type_header.lower()
+        if not (
+            content_type.startswith("multipart/form-data")
+            or content_type.startswith("application/x-www-form-urlencoded")
+        ):
+            return self.end_json(
+                400,
+                {
+                    "error": (
+                        "Felaktigt format. Formuläret måste skickas som multipart/form-data "
+                        "eller application/x-www-form-urlencoded."
+                    )
+                },
+            )
 
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
@@ -1847,18 +1921,23 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ={
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": self.headers.get("Content-Type") or "",
-            },
-            keep_blank_values=True,
-        )
+        body_bytes = self.rfile.read(content_length)
+        try:
+            parsed_fields, parsed_files = parse_form_data(content_type_header, body_bytes)
+        except ValueError:
+            html = self._render_report_issue_page(
+                global_error="Kunde inte läsa formuläret. Kontrollera bildernas format och försök igen."
+            )
+            body = html.encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
 
         def field(name: str) -> str:
-            value = form.getfirst(name, "")
+            value = parsed_fields.get(name, "")
             return str(value).strip()
 
         values = {
@@ -1919,25 +1998,26 @@ class Handler(BaseHTTPRequestHandler):
         if not values["message"]:
             errors["message"] = "Beskrivning är obligatorisk."
 
-        raw_images = form["images"] if "images" in form else []
-        image_items = raw_images if isinstance(raw_images, list) else [raw_images]
+        image_items = [
+            item for item in parsed_files if str(item.get("field_name") or "") in {"images", "photos"}
+        ]
         image_payloads: list[Dict[str, Any]] = []
         uploaded_count = 0
         for item in image_items:
-            if not getattr(item, "filename", ""):
+            if not item.get("filename"):
                 continue
             uploaded_count += 1
             if uploaded_count > REPORT_MAX_IMAGE_COUNT:
                 errors["images"] = f"Du kan ladda upp max {REPORT_MAX_IMAGE_COUNT} bilder."
                 break
-            original_name = Path(str(item.filename)).name
+            original_name = Path(str(item["filename"])).name
             extension = Path(original_name).suffix.lower()
-            content_type_value = str(item.type or "").lower()
+            content_type_value = str(item.get("content_type") or "").lower()
             allowed_extensions = REPORT_ALLOWED_MIME_TYPES.get(content_type_value)
             if not allowed_extensions or extension not in allowed_extensions:
                 errors["images"] = "Endast jpg, png eller webp är tillåtna."
                 break
-            payload = item.file.read(REPORT_MAX_IMAGE_BYTES + 1)
+            payload = item.get("data_bytes") or b""
             if len(payload) > REPORT_MAX_IMAGE_BYTES:
                 errors["images"] = "Varje bild får vara max 5 MB."
                 break

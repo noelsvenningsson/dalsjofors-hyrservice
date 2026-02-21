@@ -68,6 +68,30 @@ class ReportIssueTest(unittest.TestCase):
         except HTTPError as err:
             return err.code, err.read().decode("utf-8")
 
+    def test_parse_form_data_multipart_extracts_fields_and_file(self) -> None:
+        body, content_type = _build_multipart(
+            {"name": "Alice", "message": "Hej"},
+            [("images", "damage.png", "image/png", b"\x89PNG\r\n\x1a\n")],
+        )
+        fields, files = app.parse_form_data(content_type, body)
+
+        self.assertEqual(fields["name"], "Alice")
+        self.assertEqual(fields["message"], "Hej")
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]["field_name"], "images")
+        self.assertEqual(files[0]["filename"], "damage.png")
+        self.assertEqual(files[0]["content_type"], "image/png")
+        self.assertEqual(files[0]["data_bytes"], b"\x89PNG\r\n\x1a\n")
+
+    def test_parse_form_data_urlencoded_extracts_fields(self) -> None:
+        body = b"name=Alice+Andersson&message=Hej+igen&website="
+        fields, files = app.parse_form_data("application/x-www-form-urlencoded", body)
+
+        self.assertEqual(fields["name"], "Alice Andersson")
+        self.assertEqual(fields["message"], "Hej igen")
+        self.assertEqual(fields["website"], "")
+        self.assertEqual(files, [])
+
     def test_report_issue_post_sends_mail_with_attachment(self) -> None:
         fields = {
             "name": "Test Person",
