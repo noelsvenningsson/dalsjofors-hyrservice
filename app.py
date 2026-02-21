@@ -58,13 +58,11 @@ import hashlib
 import html as html_lib
 import time
 import base64
-import smtplib
 import uuid
 import socket
 from datetime import datetime, timedelta
 from email.parser import BytesParser
 from email.policy import default
-from email.message import EmailMessage
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
@@ -73,6 +71,7 @@ from typing import Any, Dict, Optional
 
 import db
 import notifications
+import requests
 import sms_provider
 from qrcodegen import QrCode
 from swish_client import SwishClient, SwishConfig
@@ -103,6 +102,7 @@ REPORT_MAX_IMAGE_COUNT = 6
 REPORT_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 REPORT_MAX_TOTAL_ATTACHMENT_BYTES = 15 * 1024 * 1024
 REPORT_MAX_ATTACHED_IMAGES = 3
+REPORT_MAX_WEBHOOK_PAYLOAD_BYTES = 10 * 1024 * 1024
 REPORT_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
 REPORT_RATE_LIMIT_MAX_SUBMITS = 5
 REPORT_RATE_LIMIT_BY_IP: Dict[str, list[float]] = {}
@@ -1835,35 +1835,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_issue_report_email(
+    def _send_issue_report_webhook(
         self,
         fields: Dict[str, str],
         images: list[Dict[str, Any]],
     ) -> bool:
-        smtp_host = (os.environ.get("SMTP_HOST") or "").strip()
-        smtp_port_raw = (os.environ.get("SMTP_PORT") or "").strip()
-        smtp_user = (os.environ.get("SMTP_USER") or "").strip()
-        smtp_password = (os.environ.get("SMTP_PASSWORD") or "").strip()
-        smtp_from = (os.environ.get("SMTP_FROM") or smtp_user or "").strip()
+        webhook_url = (
+            (os.environ.get("REPORT_WEBHOOK_URL") or "").strip()
+            or (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip()
+        )
         report_to = (os.environ.get("REPORT_TO") or "svenningsson@outlook.com").strip()
-        missing = []
-        if not smtp_host:
-            missing.append("SMTP_HOST")
-        if not smtp_port_raw:
-            missing.append("SMTP_PORT")
-        if not smtp_user:
-            missing.append("SMTP_USER")
-        if not smtp_password:
-            missing.append("SMTP_PASSWORD")
-        if not smtp_from:
-            missing.append("SMTP_FROM")
-        if missing:
-            logger.error("REPORT_SMTP_MISSING vars=%s", ",".join(missing))
-            return False
-        try:
-            smtp_port = int(smtp_port_raw)
-        except ValueError:
-            logger.error("REPORT_SMTP_INVALID_PORT value=%s", smtp_port_raw)
+        if not webhook_url:
+            logger.error("REPORT_WEBHOOK_SEND_FAILED reason=missing_webhook_url to=%s", report_to)
             return False
 
         report_type = REPORT_TYPE_LABELS.get(fields["report_type"], fields["report_type"])
@@ -1871,20 +1854,7 @@ class Handler(BaseHTTPRequestHandler):
             f"Skaderapport – {self._trailer_label(fields['trailer_type'])} – "
             f"{fields['name']} – {fields['detected_at']}"
         )
-        body_lines = [
-            "Ny fel/skaderapport",
-            "",
-            f"Namn: {fields['name']}",
-            f"Telefon: {fields['phone']}",
-            f"E-post: {fields['email']}",
-            f"Släp: {self._trailer_label(fields['trailer_type'])} ({fields['trailer_type']})",
-            f"Bokningsreferens/Booking ID: {fields.get('booking_reference') or '-'}",
-            f"Datum/tid upptäckt: {fields['detected_at']}",
-            f"Typ av rapport: {report_type}",
-            "",
-            "Meddelande:",
-            fields["message"],
-        ]
+        message_text = fields["message"]
 
         selected_images: list[Dict[str, Any]] = []
         total_selected_bytes = 0
@@ -1900,36 +1870,64 @@ class Handler(BaseHTTPRequestHandler):
             selected_images.append(item)
             total_selected_bytes += len(payload)
         if omitted_images > 0:
-            body_lines.extend(
-                [
-                    "",
-                    (
-                        f"OBS: {omitted_images} bild(er) bifogades inte på grund av storleksgräns. "
-                        "Be kunden skicka fler bilder vid behov."
-                    ),
-                ]
+            message_text = (
+                f"{message_text}\n\n"
+                f"OBS: {omitted_images} bild(er) bifogades inte på grund av storleksgräns. "
+                "Be kunden skicka fler bilder vid behov."
             )
 
-        message = EmailMessage()
-        message["Subject"] = subject
-        message["From"] = smtp_from
-        message["To"] = report_to
-        message.set_content("\n".join(body_lines))
+        attachments_payload: list[Dict[str, str]] = []
         for item in selected_images:
-            major, subtype = str(item["content_type"]).split("/", 1)
-            message.add_attachment(item["data"], maintype=major, subtype=subtype, filename=item["filename"])
+            attachments_payload.append(
+                {
+                    "filename": str(item["filename"]),
+                    "contentType": str(item["content_type"]),
+                    "dataBase64": base64.b64encode(item["data"]).decode("ascii"),
+                }
+            )
+
+        payload: Dict[str, Any] = {
+            "type": "issue_report",
+            "to": report_to,
+            "subject": subject,
+            "fields": {
+                "name": fields["name"],
+                "phone": fields["phone"],
+                "email": fields["email"],
+                "trailer_type": fields["trailer_type"],
+                "trailer_label": self._trailer_label(fields["trailer_type"]),
+                "booking_reference": fields.get("booking_reference") or "",
+                "detected_at": fields["detected_at"],
+                "report_type": fields["report_type"],
+                "report_type_label": report_type,
+                "message": fields["message"],
+                "website": fields.get("website") or "",
+            },
+            "message": message_text,
+            "attachments": attachments_payload,
+        }
+        booking_ref = (fields.get("booking_reference") or "").strip()
+        if booking_ref:
+            payload["bookingRef"] = booking_ref
+
+        payload_size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        if payload_size > REPORT_MAX_WEBHOOK_PAYLOAD_BYTES and attachments_payload:
+            payload["attachments"] = []
+            too_large_message = "Bilder kunde inte bifogas pga storlek, be kunden skicka separat"
+            payload["message"] = f"{message_text}\n\n{too_large_message}" if message_text else too_large_message
 
         try:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as smtp:
-                smtp.ehlo()
-                if smtp.has_extn("starttls"):
-                    smtp.starttls()
-                    smtp.ehlo()
-                smtp.login(smtp_user, smtp_password)
-                smtp.send_message(message)
-            return True
+            response = requests.post(webhook_url, json=payload, timeout=15)
+            if 200 <= int(response.status_code or 0) < 300:
+                return True
+            logger.error(
+                "REPORT_WEBHOOK_SEND_FAILED status=%s to=%s",
+                response.status_code,
+                report_to,
+            )
+            return False
         except Exception:
-            logger.exception("REPORT_SMTP_SEND_FAILED to=%s", report_to)
+            logger.exception("REPORT_WEBHOOK_SEND_FAILED to=%s", report_to)
             return False
 
     def handle_report_issue_submit(self) -> None:
@@ -2118,7 +2116,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if not self._send_issue_report_email(values, image_payloads):
+        if not self._send_issue_report_webhook(values, image_payloads):
             html = self._render_report_issue_page(
                 values=values,
                 global_error="Rapporten kunde inte skickas just nu. Försök igen senare.",

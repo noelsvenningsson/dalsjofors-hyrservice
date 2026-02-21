@@ -92,7 +92,7 @@ class ReportIssueTest(unittest.TestCase):
         self.assertEqual(fields["website"], "")
         self.assertEqual(files, [])
 
-    def test_report_issue_post_sends_mail_with_attachment(self) -> None:
+    def test_report_issue_post_sends_webhook_payload_with_attachment(self) -> None:
         fields = {
             "name": "Test Person",
             "phone": "0701234567",
@@ -109,17 +109,12 @@ class ReportIssueTest(unittest.TestCase):
             fields,
             [("images", "damage.png", "image/png", png_bytes)],
         )
-        env_backup = {k: os.environ.get(k) for k in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM", "REPORT_TO")}
-        os.environ["SMTP_HOST"] = "smtp.example.com"
-        os.environ["SMTP_PORT"] = "587"
-        os.environ["SMTP_USER"] = "user@example.com"
-        os.environ["SMTP_PASSWORD"] = "secret"
-        os.environ["SMTP_FROM"] = "noreply@example.com"
+        env_backup = {k: os.environ.get(k) for k in ("REPORT_WEBHOOK_URL", "NOTIFY_WEBHOOK_URL", "REPORT_TO")}
+        os.environ["REPORT_WEBHOOK_URL"] = "https://example.com/report-webhook"
         os.environ["REPORT_TO"] = "svenningsson@outlook.com"
         try:
-            with mock.patch("smtplib.SMTP") as smtp_class:
-                smtp_client = smtp_class.return_value.__enter__.return_value
-                smtp_client.has_extn.return_value = False
+            with mock.patch("app.requests.post") as post_mock:
+                post_mock.return_value.status_code = 200
                 status, response_text = self._request(
                     "POST",
                     "/report-issue",
@@ -129,11 +124,11 @@ class ReportIssueTest(unittest.TestCase):
 
                 self.assertEqual(status, 200)
                 self.assertIn("Rapport mottagen. Vi återkommer.", response_text)
-                smtp_client.send_message.assert_called_once()
-                message = smtp_client.send_message.call_args.args[0]
-                self.assertEqual(message["To"], "svenningsson@outlook.com")
-                attachments = list(message.iter_attachments())
-                self.assertEqual(len(attachments), 1)
+                post_mock.assert_called_once()
+                payload = post_mock.call_args.kwargs["json"]
+                self.assertEqual(payload["type"], "issue_report")
+                self.assertEqual(payload["to"], "svenningsson@outlook.com")
+                self.assertEqual(len(payload["attachments"]), 1)
         finally:
             for key, value in env_backup.items():
                 if value is None:

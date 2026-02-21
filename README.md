@@ -60,6 +60,8 @@ Use `.env.example` as the source of truth.
 - `SWISH_COMMERCE_KEY_PATH`: path to Swish Commerce private key
 - `SWISH_COMMERCE_CALLBACK_URL`: optional explicit callback URL for Swish (`/api/swish/callback` is used by default)
 - `NOTIFY_WEBHOOK_URL`: webhook endpoint för e-postkvitto (Google Apps Script)
+- `REPORT_WEBHOOK_URL`: webhook endpoint för fel-/skaderapport (prioriteras för `POST /report-issue`)
+  - Fallback för rapporter: `NOTIFY_WEBHOOK_URL`
 - `NOTIFY_WEBHOOK_SECRET`: delas i webhook-payload som `secret`
   - Rotera omedelbart om den läckt
 - `TWILIO_ACCOUNT_SID`: Twilio Account SID (optional, used for SMS on PAID)
@@ -73,11 +75,6 @@ Use `.env.example` as the source of truth.
 - `ADMIN_SESSION_SECRET`: HMAC secret for signed admin session cookies (`/admin/login`)
   - Required if browser login/session auth should be enabled
   - Keep this secret unique per environment
-- `SMTP_HOST`: SMTP server hostname for fel/skaderapport e-post
-- `SMTP_PORT`: SMTP server port (for example `587`)
-- `SMTP_USER`: SMTP username
-- `SMTP_PASSWORD`: SMTP password
-- `SMTP_FROM`: avsändaradress för rapportmail (fallback: `SMTP_USER`)
 - `REPORT_TO`: mottagaradress för rapporter (default: `svenningsson@outlook.com`)
 
 ## Deployment Notes (Render)
@@ -139,9 +136,11 @@ Recent migrations and behavior updates are auto-applied by `db.init_db()`:
 6. Fel/skaderapport
 - Ny publik sida: `GET /report-issue`
 - Formulär skickas till `POST /report-issue` med `multipart/form-data`
-- Stöd för 1-6 bilder (`jpg/png/webp`, max 5 MB/st), server-side validering och e-post med bilagor
+- Stöd för 0-6 bilder (`jpg/png/webp`, max 5 MB/st), server-side validering och webhook för utskick
+- Rapport skickas till `REPORT_WEBHOOK_URL` (fallback `NOTIFY_WEBHOOK_URL`) med JSON-payload inklusive upp till 3 base64-bilder
+- Om webhook-payload blir för stor skickas rapporten utan bilder och med varningstext i meddelandet
 - Enkel anti-spam via honeypot + rate limit per IP
-- Vid saknad SMTP-konfiguration loggas fel och användaren får ett generiskt felmeddelande
+- Vid saknad/felande webhook loggas `REPORT_WEBHOOK_SEND_FAILED` och användaren får ett generiskt felmeddelande
 
 ## API Quick Reference
 
@@ -473,7 +472,7 @@ Visar formuläret för fel-/skaderapport.
 
 ### `POST /report-issue`
 
-Tar emot rapporten via `multipart/form-data` och skickar e-post till `REPORT_TO`.
+Tar emot rapporten via `multipart/form-data` och skickar JSON till rapport-webhook (`REPORT_WEBHOOK_URL`, fallback `NOTIFY_WEBHOOK_URL`).
 
 Formfält:
 - Obligatoriska: `name`, `phone`, `email`, `trailer_type`, `detected_at`, `report_type`, `message`
