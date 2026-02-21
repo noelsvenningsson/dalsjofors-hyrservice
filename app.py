@@ -822,6 +822,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/dev/netcheck":
                 logger.info("DEV_NETCHECK path=%s", path)
                 return self.handle_dev_netcheck(query_params)
+            if path == "/api/dev/report-webhook-test":
+                return self.handle_dev_report_webhook_test()
             return self.end_json(404, {"error": "Not Found"})
         if path.startswith("/api/admin/"):
             if not self.require_admin_api_auth():
@@ -1310,6 +1312,55 @@ class Handler(BaseHTTPRequestHandler):
                 return self.end_json(200, {"ok": True})
         except Exception as exc:
             return self.end_json(200, {"ok": False, "error": str(exc)})
+
+    def handle_dev_report_webhook_test(self) -> None:
+        webhook_url = (
+            (os.environ.get("REPORT_WEBHOOK_URL") or "").strip()
+            or (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip()
+        )
+        report_to = (os.environ.get("REPORT_TO") or "svenningsson@outlook.com").strip()
+        if not webhook_url:
+            return self.end_json(
+                200,
+                {
+                    "ok": False,
+                    "error": "missing webhook url (REPORT_WEBHOOK_URL/NOTIFY_WEBHOOK_URL)",
+                    "url": "",
+                },
+            )
+
+        payload: Dict[str, Any] = {
+            "type": "issue_report",
+            "to": report_to,
+            "subject": "TEST issue_report",
+            "fields": {
+                "name": "Dev Test",
+                "phone": "0700000000",
+                "email": "test@test.se",
+                "trailer": "TEST",
+            },
+            "message": "Test från /api/dev/report-webhook-test",
+        }
+        try:
+            resp = requests.post(webhook_url, json=payload, timeout=15)
+            return self.end_json(
+                200,
+                {
+                    "ok": True,
+                    "status": int(resp.status_code or 0),
+                    "body": (resp.text or "")[:500],
+                    "url": webhook_url,
+                },
+            )
+        except Exception as exc:
+            return self.end_json(
+                200,
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "url": webhook_url,
+                },
+            )
 
     def _resolve_commit_value(self) -> str:
         for var_name in ("RENDER_GIT_COMMIT", "GIT_COMMIT", "COMMIT_SHA", "SOURCE_VERSION"):
@@ -1846,7 +1897,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         report_to = (os.environ.get("REPORT_TO") or "svenningsson@outlook.com").strip()
         if not webhook_url:
-            logger.error("REPORT_WEBHOOK_SEND_FAILED reason=missing_webhook_url to=%s", report_to)
+            logger.error("REPORT_WEBHOOK_MISSING url_env=REPORT_WEBHOOK_URL/NOTIFY_WEBHOOK_URL")
             return False
 
         report_type = REPORT_TYPE_LABELS.get(fields["report_type"], fields["report_type"])
@@ -1915,14 +1966,28 @@ class Handler(BaseHTTPRequestHandler):
             payload["attachments"] = []
             too_large_message = "Bilder kunde inte bifogas pga storlek, be kunden skicka separat"
             payload["message"] = f"{message_text}\n\n{too_large_message}" if message_text else too_large_message
+        approx_payload_size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
         try:
-            response = requests.post(webhook_url, json=payload, timeout=15)
-            if 200 <= int(response.status_code or 0) < 300:
+            logger.warning(
+                "REPORT_WEBHOOK_ATTEMPT url=%s to=%s subject=%s att_count=%d payload_bytes=%d",
+                webhook_url,
+                report_to,
+                subject,
+                len(payload.get("attachments", [])),
+                approx_payload_size,
+            )
+            resp = requests.post(webhook_url, json=payload, timeout=15)
+            logger.warning(
+                "REPORT_WEBHOOK_RESPONSE status=%s body_snippet=%s",
+                resp.status_code,
+                (resp.text or "")[:500],
+            )
+            if 200 <= int(resp.status_code or 0) < 300:
                 return True
             logger.error(
                 "REPORT_WEBHOOK_SEND_FAILED status=%s to=%s",
-                response.status_code,
+                resp.status_code,
                 report_to,
             )
             return False
