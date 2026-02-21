@@ -704,7 +704,7 @@ class Handler(BaseHTTPRequestHandler):
         customer_phone = booking.get("customer_phone_temp")
         if customer_phone and booking.get("sms_customer_sent_at") is None:
             customer_message = (
-                f"Dalsjofors Hyrservice: Bokningskvitto: {booking_ref} | {trailer_label} | "
+                f"Dalsjofors Hyrservice AB (Org.nr 559062-4556): Bokningskvitto: {booking_ref} | {trailer_label} | "
                 f"{period_label} | {price_label} | Betalning: PAID"
             )
             if sms_provider.send_sms(customer_phone, customer_message):
