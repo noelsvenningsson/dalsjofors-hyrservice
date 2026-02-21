@@ -109,9 +109,13 @@ class ReportIssueTest(unittest.TestCase):
             fields,
             [("images", "damage.png", "image/png", png_bytes)],
         )
-        env_backup = {k: os.environ.get(k) for k in ("REPORT_WEBHOOK_URL", "NOTIFY_WEBHOOK_URL", "REPORT_TO")}
+        env_backup = {
+            k: os.environ.get(k)
+            for k in ("REPORT_WEBHOOK_URL", "NOTIFY_WEBHOOK_URL", "REPORT_TO", "NOTIFY_WEBHOOK_SECRET")
+        }
         os.environ["REPORT_WEBHOOK_URL"] = "https://example.com/report-webhook"
         os.environ["REPORT_TO"] = "svenningsson@outlook.com"
+        os.environ["NOTIFY_WEBHOOK_SECRET"] = "issue-secret"
         try:
             with mock.patch("app.requests.post") as post_mock:
                 post_mock.return_value.status_code = 200
@@ -127,6 +131,7 @@ class ReportIssueTest(unittest.TestCase):
                 post_mock.assert_called_once()
                 payload = post_mock.call_args.kwargs["json"]
                 self.assertEqual(payload["type"], "issue_report")
+                self.assertEqual(payload["secret"], "issue-secret")
                 self.assertEqual(payload["to"], "svenningsson@outlook.com")
                 self.assertEqual(len(payload["attachments"]), 1)
         finally:

@@ -1319,6 +1319,7 @@ class Handler(BaseHTTPRequestHandler):
             or (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip()
         )
         report_to = (os.environ.get("REPORT_TO") or "svenningsson@outlook.com").strip()
+        webhook_secret = (os.environ.get("NOTIFY_WEBHOOK_SECRET") or "").strip()
         if not webhook_url:
             return self.end_json(
                 200,
@@ -1331,6 +1332,7 @@ class Handler(BaseHTTPRequestHandler):
 
         payload: Dict[str, Any] = {
             "type": "issue_report",
+            "secret": webhook_secret,
             "to": report_to,
             "subject": "TEST issue_report",
             "fields": {
@@ -1896,6 +1898,7 @@ class Handler(BaseHTTPRequestHandler):
             or (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip()
         )
         report_to = (os.environ.get("REPORT_TO") or "svenningsson@outlook.com").strip()
+        webhook_secret = (os.environ.get("NOTIFY_WEBHOOK_SECRET") or "").strip()
         if not webhook_url:
             logger.error("REPORT_WEBHOOK_MISSING url_env=REPORT_WEBHOOK_URL/NOTIFY_WEBHOOK_URL")
             return False
@@ -1939,6 +1942,7 @@ class Handler(BaseHTTPRequestHandler):
 
         payload: Dict[str, Any] = {
             "type": "issue_report",
+            "secret": webhook_secret,
             "to": report_to,
             "subject": subject,
             "fields": {

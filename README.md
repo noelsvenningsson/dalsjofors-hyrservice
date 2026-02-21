@@ -137,7 +137,7 @@ Recent migrations and behavior updates are auto-applied by `db.init_db()`:
 - Ny publik sida: `GET /report-issue`
 - Formulär skickas till `POST /report-issue` med `multipart/form-data`
 - Stöd för 0-6 bilder (`jpg/png/webp`, max 5 MB/st), server-side validering och webhook för utskick
-- Rapport skickas till `REPORT_WEBHOOK_URL` (fallback `NOTIFY_WEBHOOK_URL`) med JSON-payload inklusive upp till 3 base64-bilder
+- Rapport skickas till `REPORT_WEBHOOK_URL` (fallback `NOTIFY_WEBHOOK_URL`) med JSON-payload inklusive `secret` (`NOTIFY_WEBHOOK_SECRET`) och upp till 3 base64-bilder
 - Om webhook-payload blir för stor skickas rapporten utan bilder och med varningstext i meddelandet
 - Enkel anti-spam via honeypot + rate limit per IP
 - Vid saknad/felande webhook loggas `REPORT_WEBHOOK_SEND_FAILED` och användaren får ett generiskt felmeddelande
