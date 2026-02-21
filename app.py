@@ -60,6 +60,7 @@ import time
 import base64
 import smtplib
 import uuid
+import socket
 from datetime import datetime, timedelta
 from email.parser import BytesParser
 from email.policy import default
@@ -815,6 +816,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_payment_status(query_params)
         if path == "/api/swish/qr":
             return self.handle_swish_qr(query_params)
+        if path == "/api/version":
+            return self.handle_version()
+        if path.startswith("/api/dev/"):
+            if path == "/api/dev/netcheck":
+                logger.info("DEV_NETCHECK path=%s", path)
+                return self.handle_dev_netcheck(query_params)
+            return self.end_json(404, {"error": "Not Found"})
         if path.startswith("/api/admin/"):
             if not self.require_admin_api_auth():
                 return
@@ -1282,6 +1290,43 @@ class Handler(BaseHTTPRequestHandler):
         if target_status == "PAID":
             self._send_paid_sms_notifications(booking_id)
         return self.end_json(200, {"bookingId": booking_id, "swishStatus": target_status, "bookingStatus": booking_status})
+
+    def handle_dev_netcheck(self, params: Dict[str, str]) -> None:
+        host = (params.get("host") or "").strip()
+        port_raw = (params.get("port") or "").strip()
+        if not host:
+            return self.api_error(400, "invalid_request", "host is required", legacy_error="host is required")
+        if not port_raw:
+            return self.api_error(400, "invalid_request", "port is required", legacy_error="port is required")
+        try:
+            port = int(port_raw)
+        except ValueError:
+            return self.api_error(400, "invalid_request", "port must be an integer", legacy_error="port must be an integer")
+        if port < 1 or port > 65535:
+            return self.api_error(400, "invalid_request", "port must be between 1 and 65535", legacy_error="port must be between 1 and 65535")
+
+        try:
+            with socket.create_connection((host, port), timeout=5):
+                return self.end_json(200, {"ok": True})
+        except Exception as exc:
+            return self.end_json(200, {"ok": False, "error": str(exc)})
+
+    def _resolve_commit_value(self) -> str:
+        for var_name in ("RENDER_GIT_COMMIT", "GIT_COMMIT", "COMMIT_SHA", "SOURCE_VERSION"):
+            value = (os.environ.get(var_name) or "").strip()
+            if value:
+                return value
+        return "unknown"
+
+    def handle_version(self) -> None:
+        return self.end_json(
+            200,
+            {
+                "commit": self._resolve_commit_value(),
+                "time": datetime.now().isoformat(timespec="seconds"),
+                "service": "dalsjofors-hyrservice",
+            },
+        )
 
     def handle_swish_qr(self, params: Dict[str, str], *, head_only: bool = False) -> None:
         booking_id_str = params.get("bookingId")
