@@ -54,6 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const dateError = document.getElementById('date-error');
   const timeContainer = document.getElementById('time-container');
   const timeSelect = document.getElementById('rental-time');
+  const timeLegend = document.getElementById('time-legend');
   const timeError = document.getElementById('time-error');
   const receiptRequestedInput = document.getElementById('receipt-requested');
   const receiptEmailWrap = document.getElementById('receiptEmailWrap');
@@ -240,20 +241,30 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!slot) {
         opt.disabled = false;
         opt.textContent = opt.value;
+        opt.style.color = '';
+        opt.style.fontWeight = '';
         return;
       }
       if (slot.available && typeof slot.remaining === 'number' && slot.remaining <= 1) {
         opt.disabled = false;
         opt.textContent = `🟡 ${opt.value} (1/2)`;
+        opt.style.color = '#9a5d00';
+        opt.style.fontWeight = '700';
       } else if (slot.available) {
         opt.disabled = false;
         opt.textContent = opt.value;
+        opt.style.color = '';
+        opt.style.fontWeight = '';
       } else if (slot.blocked && slot.blockReason) {
         opt.disabled = true;
         opt.textContent = `🔴 ${opt.value} (full)`;
+        opt.style.color = '#b63434';
+        opt.style.fontWeight = '700';
       } else {
         opt.disabled = true;
         opt.textContent = `🔴 ${opt.value} (full)`;
+        opt.style.color = '#b63434';
+        opt.style.fontWeight = '700';
       }
     });
 
@@ -645,6 +656,9 @@ document.addEventListener('DOMContentLoaded', () => {
     radio.addEventListener('change', () => {
       state.rentalType = radio.value;
       timeContainer.hidden = state.rentalType !== 'TWO_HOURS';
+      if (timeLegend) {
+        timeLegend.hidden = state.rentalType !== 'TWO_HOURS';
+      }
       if (state.rentalType === 'TWO_HOURS') {
         updateTimeOptions();
         state.time = timeSelect.value;
