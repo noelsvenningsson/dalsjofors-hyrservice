@@ -1700,15 +1700,14 @@ class Handler(BaseHTTPRequestHandler):
   <header class="site-header">
     <h1>Dalsjöfors Hyrservice</h1>
     <p>Rapportera fel eller skada på släp</p>
-    <nav class="site-nav" aria-label="Huvudmeny">
-      <a href="/">Boka släp</a>
-      <a href="/report-issue">Rapportera fel/skada</a>
-    </nav>
   </header>
   <main>
     <section class="panel">
       <h2>Rapportera fel/skada</h2>
       <p class="intro">Skicka in uppgifterna nedan så återkommer vi så snart som möjligt.</p>
+      <p class="back-link-wrap">
+        <a class="button-secondary" href="/">Boka släp istället</a>
+      </p>
       {success_html}
       {global_error_html}
       <form method="post" action="/report-issue" enctype="multipart/form-data" novalidate>
@@ -2157,26 +2156,6 @@ class Handler(BaseHTTPRequestHandler):
       text-align: center;
     }}
     header h1 {{ margin: 0; font-size: clamp(1.5rem, 3.5vw, 2rem); }}
-    .site-nav {{
-      margin-top: 8px;
-      display: inline-flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      justify-content: center;
-    }}
-    .site-nav a {{
-      min-height: 44px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 8px 12px;
-      border-radius: 10px;
-      border: 1px solid rgba(255,255,255,.24);
-      background: rgba(255,255,255,.14);
-      color: #fff;
-      text-decoration: none;
-      font-weight: 700;
-    }}
     main {{ max-width: 700px; margin: 0 auto; padding: 16px 12px; }}
     .progress {{
       display: inline-flex;
@@ -2292,10 +2271,6 @@ class Handler(BaseHTTPRequestHandler):
 </head><body>
 <header>
   <h1>Dalsjöfors Hyrservice</h1>
-  <nav class="site-nav" aria-label="Huvudmeny">
-    <a href="/">Boka släp</a>
-    <a href="/report-issue">Rapportera fel/skada</a>
-  </nav>
 </header>
 <main>
   <div class=\"progress\">Steg 4 av 5: Betalning</div>
@@ -2445,26 +2420,6 @@ class Handler(BaseHTTPRequestHandler):
       text-align: center;
     }}
     header h1 {{ margin: 0; font-size: clamp(1.4rem, 3vw, 1.9rem); }}
-    .site-nav {{
-      margin-top: 8px;
-      display: inline-flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      justify-content: center;
-    }}
-    .site-nav a {{
-      min-height: 44px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 8px 12px;
-      border-radius: 10px;
-      border: 1px solid rgba(255,255,255,.24);
-      background: rgba(255,255,255,.14);
-      color: #fff;
-      text-decoration: none;
-      font-weight: 700;
-    }}
     main {{ max-width: 700px; margin: 0 auto; padding: 16px 12px; }}
     .progress {{
       display: inline-flex;
@@ -2529,10 +2484,6 @@ class Handler(BaseHTTPRequestHandler):
 </head><body>
 <header>
   <h1>Bokningskvitto</h1>
-  <nav class="site-nav" aria-label="Huvudmeny">
-    <a href="/">Boka släp</a>
-    <a href="/report-issue">Rapportera fel/skada</a>
-  </nav>
 </header>
 <main>
   <div class=\"progress\">Steg 5 av 5: Bekräftelse</div>
