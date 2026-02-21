@@ -12,11 +12,12 @@ import hmac
 import json
 import logging
 import os
-import urllib.error
+import time
 import urllib.request
 from typing import Any, Protocol
 
 import db
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -125,24 +126,32 @@ def _short_error(text: str, *, limit: int = 120) -> str:
 
 
 def _post_json_no_redirect(url: str, payload: dict[str, Any], *, timeout_seconds: int) -> tuple[int, str, str | None]:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    opener = urllib.request.build_opener(_NoRedirectHandler())
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    previous_opener = getattr(urllib.request, "_opener", None)
-    urllib.request.install_opener(opener)
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            return int(response.getcode() or 0), response.read().decode("utf-8", errors="replace"), None
-    except urllib.error.HTTPError as err:
-        location = err.headers.get("Location")
-        error_body = err.read().decode("utf-8", errors="replace")
-        return int(err.code), error_body, location
-    finally:
-        if previous_opener is None:
-            urllib.request.install_opener(urllib.request.build_opener())
-        else:
-            urllib.request.install_opener(previous_opener)
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=timeout_seconds,
+            allow_redirects=False,
+        )
+    except requests.RequestException:
+        raise
+    return int(response.status_code or 0), response.text, response.headers.get("Location")
+
+
+def _response_declares_ok(response_body: str) -> bool:
+    body_text = (response_body or "").strip()
+    if not body_text:
+        return False
+    try:
+        parsed = json.loads(body_text)
+    except json.JSONDecodeError:
+        return "ok" in body_text.lower()
+    if isinstance(parsed, dict):
+        if parsed.get("ok") is True:
+            return True
+        if parsed.get("success") is True:
+            return True
+    return "ok" in body_text.lower()
 
 
 def send_receipt_webhook(booking: dict[str, Any]) -> bool:
@@ -180,28 +189,66 @@ def send_receipt_webhook(booking: dict[str, Any]) -> bool:
         booking.get("booking_reference"),
         mask_email(customer_email),
     )
-    try:
-        status_code, response_body, redirect_location = _post_json_no_redirect(webhook_url, payload, timeout_seconds=10)
-    except Exception as exc:
-        logger.warning("WEBHOOK_FAIL status=0 error=%s", _short_error(str(exc)))
-        return False
+    max_attempts = 3
+    retry_backoff_seconds = (0.5, 1.0)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            status_code, response_body, redirect_location = _post_json_no_redirect(webhook_url, payload, timeout_seconds=10)
+        except requests.Timeout as exc:
+            if attempt < max_attempts:
+                logger.warning(
+                    "WEBHOOK_RETRY reason=timeout attempt=%s bookingReference=%s error=%s",
+                    attempt,
+                    booking.get("booking_reference"),
+                    _short_error(str(exc)),
+                )
+                time.sleep(retry_backoff_seconds[attempt - 1])
+                continue
+            logger.warning(
+                "WEBHOOK_FAIL status=0 bookingReference=%s error=%s",
+                booking.get("booking_reference"),
+                _short_error(str(exc)),
+            )
+            return False
+        except Exception as exc:
+            logger.warning(
+                "WEBHOOK_FAIL status=0 bookingReference=%s error=%s",
+                booking.get("booking_reference"),
+                _short_error(str(exc)),
+            )
+            return False
 
-    if status_code in {302, 303}:
-        logger.info(
-            "WEBHOOK_OK_REDIRECT status=%s bookingReference=%s",
+        if status_code in {302, 303}:
+            logger.info(
+                "WEBHOOK_OK_REDIRECT status=%s bookingReference=%s",
+                status_code,
+                booking.get("booking_reference"),
+            )
+            return True
+
+        if 200 <= status_code < 300:
+            if _response_declares_ok(response_body):
+                logger.info("WEBHOOK_OK status=%s bookingReference=%s", status_code, booking.get("booking_reference"))
+            else:
+                logger.info("WEBHOOK_OK status=%s bookingReference=%s", status_code, booking.get("booking_reference"))
+            return True
+
+        if 500 <= status_code < 600 and attempt < max_attempts:
+            logger.warning(
+                "WEBHOOK_RETRY reason=server_error status=%s attempt=%s bookingReference=%s",
+                status_code,
+                attempt,
+                booking.get("booking_reference"),
+            )
+            time.sleep(retry_backoff_seconds[attempt - 1])
+            continue
+
+        logger.warning(
+            "WEBHOOK_FAIL status=%s body=%s bookingReference=%s",
             status_code,
+            _short_error(response_body if response_body else (redirect_location or "")),
             booking.get("booking_reference"),
         )
-        return True
+        return False
 
-    if status_code == 200 and "ok" in response_body.lower():
-        logger.info("WEBHOOK_OK status=200 bookingReference=%s", booking.get("booking_reference"))
-        return True
-
-    logger.warning(
-        "WEBHOOK_FAIL status=%s body=%s bookingReference=%s",
-        status_code,
-        _short_error(response_body if response_body else (redirect_location or "")),
-        booking.get("booking_reference"),
-    )
     return False

@@ -2,7 +2,6 @@ import json
 import os
 import threading
 import unittest
-from io import BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -232,15 +231,13 @@ class NotificationsTest(unittest.TestCase):
 
 
 class ReceiptWebhookRedirectHandlingTest(unittest.TestCase):
-    @patch("notifications.urllib.request.urlopen")
-    def test_send_receipt_webhook_treats_initial_http_302_as_success(self, mock_urlopen) -> None:
-        mock_urlopen.side_effect = HTTPError(
-            "https://example.com/exec",
-            302,
-            "Found",
-            {"Location": "https://script.googleusercontent.com/macros/echo"},
-            BytesIO(b"redirect"),
-        )
+    @patch("notifications.requests.post")
+    def test_send_receipt_webhook_treats_initial_http_302_as_success(self, mock_post) -> None:
+        mock_response = unittest.mock.Mock()
+        mock_response.status_code = 302
+        mock_response.text = "redirect"
+        mock_response.headers = {"Location": "https://script.googleusercontent.com/macros/echo"}
+        mock_post.return_value = mock_response
 
         old_url = os.environ.get("NOTIFY_WEBHOOK_URL")
         old_secret = os.environ.get("NOTIFY_WEBHOOK_SECRET")

@@ -725,11 +725,42 @@ class Handler(BaseHTTPRequestHandler):
         )
         if any(receipt_booking.get(field) in (None, "") for field in required_receipt_fields):
             receipt_booking = db.get_booking_by_id(booking_id) or receipt_booking
-        if str(receipt_booking.get("booking_reference") or "").startswith("TEST-"):
+        booking_reference = receipt_booking.get("booking_reference")
+        if str(booking_reference or "").startswith("TEST-"):
+            logger.info(
+                "RECEIPT_WEBHOOK_SKIP reason=test_booking bookingId=%s bookingReference=%s",
+                booking_id,
+                booking_reference,
+            )
             return
-        if receipt_booking.get("receipt_requested_temp") and receipt_booking.get("customer_email_temp"):
-            if notifications.send_receipt_webhook(receipt_booking):
-                db.clear_receipt_temp_fields(booking_id)
+        if not receipt_booking.get("receipt_requested_temp"):
+            return
+        if not receipt_booking.get("customer_email_temp"):
+            logger.info(
+                "RECEIPT_WEBHOOK_SKIP reason=missing_email bookingId=%s bookingReference=%s",
+                booking_id,
+                booking_reference,
+            )
+            return
+        if not (os.environ.get("NOTIFY_WEBHOOK_URL") or "").strip():
+            logger.info(
+                "RECEIPT_WEBHOOK_SKIP reason=missing_env bookingId=%s bookingReference=%s",
+                booking_id,
+                booking_reference,
+            )
+            return
+        if not db.claim_receipt_webhook_send(booking_id):
+            logger.info(
+                "RECEIPT_WEBHOOK_SKIP reason=already_inflight_or_sent bookingId=%s bookingReference=%s",
+                booking_id,
+                booking_reference,
+            )
+            return
+        if notifications.send_receipt_webhook(receipt_booking):
+            db.mark_receipt_webhook_sent(booking_id)
+            db.clear_receipt_temp_fields(booking_id)
+            return
+        db.release_receipt_webhook_lock(booking_id)
 
     def _parse_iso_datetime_field(self, field_name: str, raw_value: Optional[str]) -> Optional[datetime]:
         value = (raw_value or "").strip()

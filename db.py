@@ -79,6 +79,8 @@ def _ensure_swish_columns(conn):
         ("receipt_requested_temp", "INTEGER"),
         ("sms_admin_sent_at", "TEXT"),
         ("sms_customer_sent_at", "TEXT"),
+        ("receipt_webhook_sent_at", "TEXT"),
+        ("receipt_webhook_lock_at", "TEXT"),
     ]
     cur = conn.cursor()
     for name, typ in cols:
@@ -124,7 +126,9 @@ def init_db() -> None:
             customer_email_temp TEXT,
             receipt_requested_temp INTEGER,
             sms_admin_sent_at TEXT,
-            sms_customer_sent_at TEXT
+            sms_customer_sent_at TEXT,
+            receipt_webhook_sent_at TEXT,
+            receipt_webhook_lock_at TEXT
         );
         """
     )
@@ -930,6 +934,67 @@ def clear_receipt_temp_fields(booking_id: int) -> None:
             (booking_id,),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_receipt_webhook_sent(booking_id: int, *, sent_at: Optional[str] = None) -> bool:
+    """Atomically mark receipt webhook as sent once per booking."""
+    effective_sent_at = sent_at or datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE bookings
+            SET receipt_webhook_sent_at = ?,
+                receipt_webhook_lock_at = NULL
+            WHERE id = ?
+              AND receipt_webhook_sent_at IS NULL
+            """,
+            (effective_sent_at, booking_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def claim_receipt_webhook_send(booking_id: int, *, lock_at: Optional[str] = None) -> bool:
+    """Atomically claim receipt webhook send lock for one in-flight sender."""
+    effective_lock_at = lock_at or datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE bookings
+            SET receipt_webhook_lock_at = ?
+            WHERE id = ?
+              AND receipt_webhook_lock_at IS NULL
+              AND receipt_webhook_sent_at IS NULL
+            """,
+            (effective_lock_at, booking_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def release_receipt_webhook_lock(booking_id: int) -> bool:
+    """Release receipt webhook send lock only while still unsent."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE bookings
+            SET receipt_webhook_lock_at = NULL
+            WHERE id = ?
+              AND receipt_webhook_sent_at IS NULL
+            """,
+            (booking_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
