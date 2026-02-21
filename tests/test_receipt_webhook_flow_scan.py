@@ -109,6 +109,8 @@ def test_a_paid_requested_with_email_and_env_posts_once_with_expected_payload(
 
     payload = call["json"]
     assert payload["event"] == "booking.confirmed"
+    assert payload["companyName"] == "Dalsjöfors Hyrservice AB"
+    assert payload["organizationNumber"] == "559062-4556"
     assert payload["receiptRequested"] is True
     assert payload["customerEmail"] == "receipt@example.com"
     assert payload["swishStatus"] == "PAID"

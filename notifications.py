@@ -21,6 +21,9 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+COMPANY_NAME = "Dalsjöfors Hyrservice AB"
+ORGANIZATION_NUMBER = "559062-4556"
+
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
@@ -176,6 +179,8 @@ def send_receipt_webhook(booking: dict[str, Any]) -> bool:
         "receiptRequested": True,
         "customerEmail": customer_email,
         "event": "booking.confirmed",
+        "companyName": COMPANY_NAME,
+        "organizationNumber": ORGANIZATION_NUMBER,
         "bookingId": booking.get("id"),
         "bookingReference": booking.get("booking_reference"),
         "trailerType": booking.get("trailer_type"),
