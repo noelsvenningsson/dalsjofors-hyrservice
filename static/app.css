@@ -109,6 +109,42 @@ main#wizard {
   letter-spacing: 0.02em;
 }
 
+.progress-wrap {
+  margin-bottom: 0.65rem;
+}
+
+.progress-steps {
+  margin: 0 0 0.8rem;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.progress-steps li {
+  text-align: center;
+  font-size: 0.76rem;
+  padding: 0.35rem 0.2rem;
+  border-radius: 999px;
+  border: 1px solid #d4dee8;
+  background: #f4f8fc;
+  color: #59708a;
+  font-weight: 700;
+}
+
+.progress-steps li.is-complete {
+  background: #e6f3eb;
+  border-color: #bddcc8;
+  color: #17633f;
+}
+
+.progress-steps li.is-active {
+  background: #e8f1fb;
+  border-color: #b8cfe6;
+  color: #1f4f7d;
+}
+
 .step {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -321,6 +357,13 @@ input[type="email"]:focus-visible,
   font-size: 0.88rem;
 }
 
+.field-error {
+  margin: -0.2rem 0 0;
+  color: var(--danger);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
 .summary-list p {
   margin: 0.4rem 0;
   padding: 0.45rem 0.55rem;
@@ -348,6 +391,21 @@ input[type="email"]:focus-visible,
   font-weight: 700;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.actions .primary {
+  background: linear-gradient(165deg, #1f4f7d 0%, #2f699d 100%);
+  box-shadow: 0 8px 16px rgba(23, 66, 106, 0.22);
+}
+
+.actions .primary:hover:not(:disabled) {
+  background: linear-gradient(165deg, #1a446c 0%, #275983 100%);
+}
+
+.actions .secondary {
+  background: #fff;
+  color: #28425a;
+  border-color: #b3c4d3;
 }
 
 .actions button:hover:not(:disabled) {
@@ -383,6 +441,7 @@ input[type="email"]:focus-visible,
 .payment-actions {
   display: flex;
   gap: 0.6rem;
+  flex-wrap: wrap;
   margin-top: 0.8rem;
 }
 
@@ -404,6 +463,21 @@ input[type="email"]:focus-visible,
   background: #0e653a;
 }
 
+#check-payment-status {
+  min-height: 44px;
+  padding: 0.5rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid #b8c8d8;
+  background: #fff;
+  color: #27455f;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#check-payment-status:hover {
+  background: #f4f9fd;
+}
+
 #retry-payment {
   min-height: 44px;
   padding: 0.5rem 0.9rem;
@@ -412,6 +486,37 @@ input[type="email"]:focus-visible,
   background: #fff;
   color: #28425a;
   font-weight: 700;
+}
+
+.payment-status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+  color: #2d4c67;
+}
+
+.payment-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #8ba1b5;
+  box-shadow: 0 0 0 3px rgba(139, 161, 181, 0.2);
+}
+
+.payment-status-dot.is-pending {
+  background: #9a5d00;
+  box-shadow: 0 0 0 3px rgba(154, 93, 0, 0.2);
+}
+
+.payment-status-dot.is-paid {
+  background: #107443;
+  box-shadow: 0 0 0 3px rgba(16, 116, 67, 0.2);
+}
+
+.payment-status-dot.is-failed {
+  background: #b63434;
+  box-shadow: 0 0 0 3px rgba(182, 52, 52, 0.2);
 }
 
 #retry-payment:hover {
@@ -516,6 +621,17 @@ input[type="email"]:focus-visible,
   .actions button {
     width: 100%;
   }
+
+  .actions.sticky-mobile {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    padding: 0.55rem;
+    margin: 1rem -0.55rem -0.55rem;
+    border-top: 1px solid #d6e0ea;
+    background: linear-gradient(to top, rgba(242, 246, 249, 0.98), rgba(242, 246, 249, 0.88));
+    backdrop-filter: blur(4px);
+  }
 }
 
 @media (max-width: 480px) {
@@ -534,5 +650,15 @@ input[type="email"]:focus-visible,
 
   .progress {
     font-size: 0.8rem;
+  }
+
+  .progress-steps {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.25rem;
+  }
+
+  .progress-steps li {
+    font-size: 0.66rem;
+    padding: 0.28rem 0.15rem;
   }
 }

@@ -869,6 +869,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_price(query_params)
         if path == "/api/availability":
             return self.handle_availability(query_params)
+        if path == "/api/availability-slots":
+            return self.handle_availability_slots(query_params)
         if path == "/api/payment":
             return self.handle_payment(query_params)
         if path == "/api/payment-status":
@@ -1131,7 +1133,55 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self.api_error(500, "internal_error", "Internal server error", legacy_error=str(e))
         available = remaining > 0
-        return self.end_json(200, {"available": available, "remaining": remaining})
+        payload: Dict[str, Any] = {"available": available, "remaining": remaining}
+        if block:
+            payload["blocked"] = True
+            payload["blockReason"] = (block.get("reason") or "").strip() or "Administrativ blockering"
+        else:
+            payload["blocked"] = False
+            payload["blockReason"] = ""
+        return self.end_json(200, payload)
+
+    def handle_availability_slots(self, params: Dict[str, str]) -> None:
+        trailer_type_u = self._validate_trailer_type(params.get("trailerType"))
+        rental_type_u = self._validate_rental_type(params.get("rentalType"))
+        date_str = self._validate_date(params.get("date"))
+        if trailer_type_u is None or rental_type_u is None or date_str is None:
+            return
+        if rental_type_u != "TWO_HOURS":
+            return self.api_error(
+                400,
+                "invalid_request",
+                "Endpoint supports TWO_HOURS only",
+                legacy_error="rentalType must be TWO_HOURS",
+            )
+
+        slots: list[Dict[str, Any]] = []
+        for hour in range(8, 19):
+            for minute in (0, 30):
+                start_time = f"{hour:02d}:{minute:02d}"
+                start_dt = datetime.strptime(f"{date_str}T{start_time}", "%Y-%m-%dT%H:%M")
+                end_dt = start_dt + timedelta(hours=2)
+                block = db.find_block_overlap(trailer_type_u, start_dt, end_dt)
+                if block:
+                    remaining = 0
+                    available = False
+                    block_reason = (block.get("reason") or "").strip() or "Administrativ blockering"
+                else:
+                    overlapping = db.count_overlapping_active_bookings(trailer_type_u, start_dt, end_dt)
+                    remaining = max(0, db.TRAILERS_PER_TYPE - overlapping)
+                    available = remaining > 0
+                    block_reason = ""
+                slots.append(
+                    {
+                        "time": start_time,
+                        "available": available,
+                        "remaining": remaining,
+                        "blocked": bool(block),
+                        "blockReason": block_reason,
+                    }
+                )
+        return self.end_json(200, {"slots": slots})
 
     def _swish_mode(self) -> str:
         return runtime.swish_mode()

@@ -1,6 +1,7 @@
 (function () {
   const bookingsRowsEl = document.getElementById('bookings-rows');
   const bookingsFeedbackEl = document.getElementById('bookings-feedback');
+  const filterPeriodEl = document.getElementById('filter-period');
   const filterDateEl = document.getElementById('filter-date');
   const filterStatusEl = document.getElementById('filter-status');
   const filterTrailerEl = document.getElementById('filter-trailer');
@@ -59,10 +60,10 @@
   }
 
   function formatStatus(status) {
-    if (status === 'PENDING_PAYMENT') return 'Pending';
-    if (status === 'CONFIRMED') return 'Confirmed';
-    if (status === 'CANCELLED') return 'Cancelled';
-    if (status === 'PENDING') return 'Pending';
+    if (status === 'PENDING_PAYMENT') return 'Väntar på betalning';
+    if (status === 'CONFIRMED') return 'Bekräftad';
+    if (status === 'CANCELLED') return 'Avbokad';
+    if (status === 'PENDING') return 'Väntar';
     if (status === 'PAID') return 'PAID';
     return status || '-';
   }
@@ -77,6 +78,35 @@
   function toDateOnly(isoDatetime) {
     if (!isoDatetime || isoDatetime.length < 10) return '';
     return isoDatetime.slice(0, 10);
+  }
+
+  function toDateFromIso(isoDatetime) {
+    if (!isoDatetime) return null;
+    const value = String(isoDatetime).replace(' ', 'T');
+    const dt = new Date(value);
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  }
+
+  function inSelectedPeriod(rowDate, period) {
+    if (!(rowDate instanceof Date)) return false;
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const rowDay = new Date(rowDate.getFullYear(), rowDate.getMonth(), rowDate.getDate());
+    if (period === 'TODAY') {
+      return rowDay.getTime() === todayStart.getTime();
+    }
+    if (period === 'WEEK') {
+      const dayIndex = (todayStart.getDay() + 6) % 7; // Monday=0
+      const weekStart = new Date(todayStart);
+      weekStart.setDate(todayStart.getDate() - dayIndex);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 7);
+      return rowDay >= weekStart && rowDay < weekEnd;
+    }
+    if (period === 'MONTH') {
+      return rowDay.getFullYear() === todayStart.getFullYear() && rowDay.getMonth() === todayStart.getMonth();
+    }
+    return true;
   }
 
   function formatDateTime(isoDatetime) {
@@ -102,6 +132,7 @@
   }
 
   function computeFilteredBookings() {
+    const selectedPeriod = filterPeriodEl.value || 'TODAY';
     const selectedDate = filterDateEl.value;
     const selectedTrailer = filterTrailerEl.value;
     const selectedStatus = filterStatusEl.value;
@@ -109,6 +140,8 @@
     let rows = state.bookings.slice();
     if (selectedDate) {
       rows = rows.filter((row) => toDateOnly(row.startDt) === selectedDate);
+    } else if (selectedPeriod !== 'ALL') {
+      rows = rows.filter((row) => inSelectedPeriod(toDateFromIso(row.startDt), selectedPeriod));
     }
     if (selectedTrailer !== 'ALL') {
       rows = rows.filter((row) => row.trailerType === selectedTrailer);
@@ -116,7 +149,7 @@
     if (selectedStatus !== 'ALL') {
       rows = rows.filter((row) => row.status === selectedStatus);
     }
-    return rows;
+    return rows.sort((a, b) => String(b.startDt || '').localeCompare(String(a.startDt || '')));
   }
 
   function updateKpis() {
@@ -160,10 +193,10 @@
         '<td>' + escapeHtml(formatTimeRange(row.startDt, row.endDt)) + '</td>' +
         '<td><span class="status-pill ' + escapeHtml(statusClass(row.status)) + '">' + escapeHtml(formatStatus(row.status)) + '</span></td>' +
         '<td>' + escapeHtml(String(row.price)) + ' kr</td>' +
-        '<td><a class="link" href="' + detailsHref + '" target="_blank" rel="noopener">Öppna detaljer</a></td>' +
+        '<td><a class="link" href="' + detailsHref + '" target="_blank" rel="noopener">Visa bokning</a></td>' +
       '</tr>';
     }).join('');
-    bookingsFeedbackEl.textContent = rows.length + ' bokningar visas.';
+    bookingsFeedbackEl.textContent = rows.length + ' bokning(ar) visas.';
   }
 
   async function fetchBookings() {
@@ -271,6 +304,12 @@
   function bindEvents() {
     refreshBookingsBtn.addEventListener('click', fetchBookings);
     refreshBlocksBtn.addEventListener('click', fetchBlocks);
+    filterPeriodEl.addEventListener('change', () => {
+      if (filterPeriodEl.value !== 'ALL') {
+        filterDateEl.value = '';
+      }
+      renderBookings();
+    });
     filterDateEl.addEventListener('change', renderBookings);
     filterStatusEl.addEventListener('change', renderBookings);
     filterTrailerEl.addEventListener('change', renderBookings);
@@ -287,8 +326,8 @@
   }
 
   function initDefaults() {
-    const today = new Date().toISOString().slice(0, 10);
-    filterDateEl.value = today;
+    filterPeriodEl.value = 'TODAY';
+    filterDateEl.value = '';
   }
 
   async function init() {

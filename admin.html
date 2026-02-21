@@ -8,9 +8,8 @@
 </head>
 <body>
   <header class="site-header">
-    <h1>Admin Dashboard</h1>
-    <p>Daglig drift och bokningsöversikt</p>
-    <p>Inloggning fungerar med aktiv adminsession.</p>
+    <h1>Admin Dashboard – Dalsjöfors Hyrservice</h1>
+    <p>Översikt av bokningar och blockeringar</p>
     <form method="post" action="/admin/logout">
       <button type="submit" class="button">Logga ut</button>
     </form>
@@ -23,15 +22,15 @@
         <p class="kpi-value" id="kpi-today">0</p>
       </article>
       <article class="kpi-card">
-        <p class="kpi-label">Pending</p>
+        <p class="kpi-label">Väntar på betalning</p>
         <p class="kpi-value" id="kpi-pending">0</p>
       </article>
       <article class="kpi-card">
-        <p class="kpi-label">Confirmed</p>
+        <p class="kpi-label">Bekräftade</p>
         <p class="kpi-value" id="kpi-confirmed">0</p>
       </article>
       <article class="kpi-card">
-        <p class="kpi-label">Cancelled</p>
+        <p class="kpi-label">Avbokade</p>
         <p class="kpi-value" id="kpi-cancelled">0</p>
       </article>
     </section>
@@ -41,8 +40,18 @@
         <h2>Bokningar</h2>
         <button type="button" id="refresh-bookings" class="button">Uppdatera lista</button>
       </div>
+      <p class="panel-help">Filtrera bokningar nedan. Välj period eller exakt datum.</p>
 
       <form id="filters" class="filters" autocomplete="off">
+        <label>
+          Period
+          <select id="filter-period">
+            <option value="TODAY">Idag</option>
+            <option value="WEEK">Denna vecka</option>
+            <option value="MONTH">Denna månad</option>
+            <option value="ALL">Alla tider</option>
+          </select>
+        </label>
         <label>
           Datum
           <input type="date" id="filter-date" />
@@ -51,9 +60,9 @@
           Status
           <select id="filter-status">
             <option value="ALL">Alla</option>
-            <option value="PENDING_PAYMENT">Pending</option>
-            <option value="CONFIRMED">Confirmed</option>
-            <option value="CANCELLED">Cancelled</option>
+            <option value="PENDING_PAYMENT">Väntar på betalning</option>
+            <option value="CONFIRMED">Bekräftad</option>
+            <option value="CANCELLED">Avbokad</option>
           </select>
         </label>
         <label>
@@ -77,7 +86,7 @@
               <th>Tid</th>
               <th>Status</th>
               <th>Pris</th>
-              <th>Åtgärd</th>
+              <th>Öppna</th>
             </tr>
           </thead>
           <tbody id="bookings-rows"></tbody>
@@ -90,6 +99,7 @@
         <h2>Blockeringar</h2>
         <button type="button" id="refresh-blocks" class="button">Uppdatera blockeringar</button>
       </div>
+      <p class="panel-help">Skapa blockering när släp inte ska kunna bokas. Skriv alltid en tydlig orsak.</p>
 
       <form id="block-form" class="filters" autocomplete="off">
         <label>
@@ -109,7 +119,7 @@
         </label>
         <label class="full-width">
           Orsak
-          <input type="text" id="block-reason" placeholder="Valfri notering" />
+          <input type="text" id="block-reason" placeholder="Exempel: Service, reparation eller intern användning" />
         </label>
         <div class="form-actions">
           <button type="submit" class="button">Skapa blockering</button>

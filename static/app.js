@@ -16,6 +16,9 @@ document.addEventListener('DOMContentLoaded', () => {
     price: null,
     dayTypeLabel: null,
     available: null,
+    blocked: false,
+    blockReason: '',
+    slotAvailability: [],
     remaining: null,
     remainingByType: { GALLER: null, KAP: null },
     bookingId: null,
@@ -23,9 +26,11 @@ document.addEventListener('DOMContentLoaded', () => {
     createdAt: null,
     swishStatus: null,
     pollTimer: null,
+    holdPromise: null,
   };
 
   const progressEl = document.getElementById('progress');
+  const progressSteps = Array.from(document.querySelectorAll('#progress-steps li'));
   const steps = {
     1: document.getElementById('step1'),
     2: document.getElementById('step2'),
@@ -45,11 +50,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const step2Next = document.getElementById('step2-next');
 
   const dateInput = document.getElementById('rental-date');
+  const dateError = document.getElementById('date-error');
   const timeContainer = document.getElementById('time-container');
   const timeSelect = document.getElementById('rental-time');
+  const timeError = document.getElementById('time-error');
   const receiptRequestedInput = document.getElementById('receipt-requested');
   const receiptEmailWrap = document.getElementById('receiptEmailWrap');
   const customerEmailInput = document.getElementById('customer-email');
+  const emailError = document.getElementById('email-error');
   const availabilityInfo = document.getElementById('availability-info');
   const step3Back = document.getElementById('step3-back');
   const step3Next = document.getElementById('step3-next');
@@ -58,9 +66,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const step4Back = document.getElementById('step4-back');
   const paymentPanel = document.getElementById('payment-panel');
   const paymentInfo = document.getElementById('payment-info');
+  const paymentStatusDot = document.getElementById('payment-status-dot');
+  const paymentStatusText = document.getElementById('payment-status-text');
   const qrWrap = document.getElementById('qr-wrap');
   const paymentQr = document.getElementById('payment-qr');
   const openSwishLink = document.getElementById('open-swish-link');
+  const checkPaymentStatus = document.getElementById('check-payment-status');
   const retryPayment = document.getElementById('retry-payment');
 
   const confirmationEl = document.getElementById('confirmation');
@@ -84,6 +95,15 @@ document.addEventListener('DOMContentLoaded', () => {
   function showStep(n) {
     currentStep = n;
     progressEl.textContent = `Steg ${n} av 5`;
+    progressSteps.forEach(stepNode => {
+      const stepNo = Number(stepNode.dataset.step || 0);
+      stepNode.classList.remove('is-active', 'is-complete');
+      if (stepNo < n) {
+        stepNode.classList.add('is-complete');
+      } else if (stepNo === n) {
+        stepNode.classList.add('is-active');
+      }
+    });
     Object.keys(steps).forEach(key => {
       const stepNode = steps[key];
       const isTarget = Number(key) === n;
@@ -108,6 +128,30 @@ document.addEventListener('DOMContentLoaded', () => {
   function setButtonLoading(button, loading) {
     button.disabled = loading;
     button.classList.toggle('is-loading', loading);
+  }
+
+  function setFieldError(el, message) {
+    if (!el) return;
+    const text = (message || '').trim();
+    el.textContent = text;
+    el.hidden = !text;
+  }
+
+  function setPaymentStatusBadge(status) {
+    if (!paymentStatusDot || !paymentStatusText) return;
+    paymentStatusDot.classList.remove('is-pending', 'is-paid', 'is-failed');
+    if (status === 'PAID') {
+      paymentStatusDot.classList.add('is-paid');
+      paymentStatusText.textContent = 'Betalning registrerad';
+      return;
+    }
+    if (status === 'FAILED') {
+      paymentStatusDot.classList.add('is-failed');
+      paymentStatusText.textContent = 'Betalning misslyckades';
+      return;
+    }
+    paymentStatusDot.classList.add('is-pending');
+    paymentStatusText.textContent = 'Väntar på betalning';
   }
 
   function stopPaymentPolling() {
@@ -187,6 +231,71 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function applyTimeSlotAvailability() {
+    const slotMap = new Map((state.slotAvailability || []).map(slot => [slot.time, slot]));
+    const options = Array.from(timeSelect.options);
+    options.forEach(opt => {
+      const slot = slotMap.get(opt.value);
+      if (!slot) {
+        opt.disabled = false;
+        opt.textContent = opt.value;
+        return;
+      }
+      if (slot.available) {
+        opt.disabled = false;
+        opt.textContent = `${opt.value} (${formatAvailableCount(slot.remaining)})`;
+      } else if (slot.blocked && slot.blockReason) {
+        opt.disabled = true;
+        opt.textContent = `${opt.value} (Blockerad: ${slot.blockReason})`;
+      } else {
+        opt.disabled = true;
+        opt.textContent = `${opt.value} (Fullbokat)`;
+      }
+    });
+
+    if (!state.time || (slotMap.get(state.time) && !slotMap.get(state.time).available)) {
+      const firstAvailable = (state.slotAvailability || []).find(slot => slot.available);
+      if (firstAvailable) {
+        state.time = firstAvailable.time;
+        timeSelect.value = firstAvailable.time;
+      }
+    }
+  }
+
+  function nextAvailableTimeAfterCurrent() {
+    if (state.rentalType !== 'TWO_HOURS' || !state.slotAvailability.length) return null;
+    const selected = state.time;
+    if (!selected) return state.slotAvailability.find(slot => slot.available)?.time || null;
+    const currentIndex = state.slotAvailability.findIndex(slot => slot.time === selected);
+    if (currentIndex < 0) return state.slotAvailability.find(slot => slot.available)?.time || null;
+    for (let i = currentIndex + 1; i < state.slotAvailability.length; i += 1) {
+      if (state.slotAvailability[i].available) {
+        return state.slotAvailability[i].time;
+      }
+    }
+    return null;
+  }
+
+  function updateTimeAvailabilityForDate() {
+    if (!state.date || state.rentalType !== 'TWO_HOURS' || !state.trailerType) {
+      return Promise.resolve();
+    }
+    return fetch(
+      `/api/availability-slots?trailerType=${encodeURIComponent(state.trailerType)}&rentalType=TWO_HOURS&date=${encodeURIComponent(state.date)}`
+    )
+      .then(res => res.json().then(data => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (!ok || !Array.isArray(data.slots)) {
+          throw new Error('Kunde inte läsa tider');
+        }
+        state.slotAvailability = data.slots;
+        applyTimeSlotAvailability();
+      })
+      .catch(() => {
+        state.slotAvailability = [];
+      });
+  }
+
   function updateAvailabilityInfo() {
     if (state.remaining == null) {
       setInfoState(availabilityInfo, '', null);
@@ -196,38 +305,50 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.available && availableText !== 'Fullbokat') {
       setInfoState(availabilityInfo, availableText, 'success');
     } else {
-      setInfoState(availabilityInfo, 'Fullbokat', 'error');
+      const nextTime = nextAvailableTimeAfterCurrent();
+      if (state.blocked && state.blockReason) {
+        const suffix = nextTime ? ` Nästa lediga tid: ${nextTime}.` : '';
+        setInfoState(availabilityInfo, `Fullbokat (${state.blockReason}).${suffix}`, 'error');
+      } else {
+        const suffix = nextTime ? ` Nästa lediga tid: ${nextTime}.` : '';
+        setInfoState(availabilityInfo, `Fullbokat.${suffix}`, 'error');
+      }
     }
     step3Next.disabled = !state.available;
   }
 
   function updateAvailabilityCounts() {
     if (!state.date || !state.rentalType) return;
+    const availabilityPromise = state.rentalType === 'TWO_HOURS' ? updateTimeAvailabilityForDate() : Promise.resolve();
     if (state.trailerType) {
       setInfoState(availabilityInfo, 'Kontrollerar tillgänglighet …', 'loading');
     }
-    const timeParam = state.rentalType === 'TWO_HOURS' && state.time ? `&startTime=${encodeURIComponent(state.time)}` : '';
-    ['GALLER', 'KAP'].forEach(type => {
-      fetch(`/api/availability?trailerType=${type}&rentalType=${state.rentalType}&date=${state.date}${timeParam}`)
-        .then(res => res.json())
-        .then(data => {
-          state.remainingByType[type] = data.remaining;
-          const el = document.getElementById(`availability-${type.toLowerCase()}`);
-          if (el) {
-            el.textContent = formatAvailableCount(data.remaining);
-          }
-          if (state.trailerType === type) {
-            state.available = data.available;
-            state.remaining = data.remaining;
-            updateAvailabilityInfo();
-          }
-          updateDebugInfo();
-        })
-        .catch(() => {
-          if (state.trailerType === type) {
-            setInfoState(availabilityInfo, 'Kunde inte läsa tillgänglighet', 'error');
-          }
-        });
+    availabilityPromise.finally(() => {
+      const timeParam = state.rentalType === 'TWO_HOURS' && state.time ? `&startTime=${encodeURIComponent(state.time)}` : '';
+      ['GALLER', 'KAP'].forEach(type => {
+        fetch(`/api/availability?trailerType=${type}&rentalType=${state.rentalType}&date=${state.date}${timeParam}`)
+          .then(res => res.json())
+          .then(data => {
+            state.remainingByType[type] = data.remaining;
+            const el = document.getElementById(`availability-${type.toLowerCase()}`);
+            if (el) {
+              el.textContent = formatAvailableCount(data.remaining);
+            }
+            if (state.trailerType === type) {
+              state.available = data.available;
+              state.remaining = data.remaining;
+              state.blocked = !!data.blocked;
+              state.blockReason = data.blockReason || '';
+              updateAvailabilityInfo();
+            }
+            updateDebugInfo();
+          })
+          .catch(() => {
+            if (state.trailerType === type) {
+              setInfoState(availabilityInfo, 'Kunde inte läsa tillgänglighet', 'error');
+            }
+          });
+      });
     });
   }
 
@@ -308,6 +429,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.bookingId) {
       return Promise.resolve(state.bookingId);
     }
+    if (state.holdPromise) {
+      return state.holdPromise;
+    }
     const payload = {
       trailerType: state.trailerType,
       rentalType: state.rentalType,
@@ -319,7 +443,7 @@ document.addEventListener('DOMContentLoaded', () => {
       payload.receiptEmail = state.customerEmail || '';
     }
     if (state.rentalType === 'TWO_HOURS') payload.startTime = state.time;
-    return fetch('/api/hold', {
+    state.holdPromise = fetch('/api/hold', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -335,7 +459,11 @@ document.addEventListener('DOMContentLoaded', () => {
         updateSummary();
         updateDebugInfo();
         return state.bookingId;
+      })
+      .finally(() => {
+        state.holdPromise = null;
       });
+    return state.holdPromise;
   }
 
   function requestSwishPayment() {
@@ -343,6 +471,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return Promise.reject(new Error('bookingId saknas'));
     }
     setInfoState(paymentInfo, 'Skapar betalningsförfrågan …', 'loading');
+    setPaymentStatusBadge('PENDING');
     paymentPanel.hidden = false;
     retryPayment.hidden = true;
 
@@ -373,6 +502,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Confirmation must only depend on swishStatus (never on generic data.status).
         if (isPaid(swishStatus)) {
           setInfoState(paymentInfo, 'Betalning registrerad.', 'success');
+          setPaymentStatusBadge('PAID');
           stopPaymentPolling();
           gotoConfirmation();
           return;
@@ -381,12 +511,52 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isFailed(swishStatus)) {
           stopPaymentPolling();
           setInfoState(paymentInfo, 'Betalningen misslyckades. Försök igen.', 'error');
+          setPaymentStatusBadge('FAILED');
           retryPayment.hidden = false;
           return;
         }
 
+        setPaymentStatusBadge('PENDING');
         setInfoState(paymentInfo, data.idempotent ? 'Väntar på betalning... Återanvänder befintlig förfrågan.' : 'Väntar på betalning...', 'loading');
         startPaymentPolling();
+      });
+  }
+
+  function checkPaymentStatusOnce() {
+    if (!state.bookingId) return;
+    setButtonLoading(checkPaymentStatus, true);
+    fetch(`/api/payment-status?bookingId=${encodeURIComponent(state.bookingId)}`)
+      .then(res => res.json().then(data => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (!ok) {
+          setInfoState(paymentInfo, 'Kunde inte kontrollera betalstatus just nu.', 'warning');
+          return;
+        }
+        const swishStatus = readSwishStatus(data, '/api/payment-status');
+        state.swishStatus = swishStatus;
+        updateDebugInfo();
+        if (isPaid(swishStatus)) {
+          setPaymentStatusBadge('PAID');
+          setInfoState(paymentInfo, 'Betalning registrerad.', 'success');
+          stopPaymentPolling();
+          gotoConfirmation();
+          return;
+        }
+        if (isFailed(swishStatus)) {
+          setPaymentStatusBadge('FAILED');
+          setInfoState(paymentInfo, 'Betalningen misslyckades. Försök igen.', 'error');
+          retryPayment.hidden = false;
+          stopPaymentPolling();
+          return;
+        }
+        setPaymentStatusBadge('PENDING');
+        setInfoState(paymentInfo, 'Fortfarande väntande. Kontrollera igen om några sekunder.', 'loading');
+      })
+      .catch(() => {
+        setInfoState(paymentInfo, 'Kunde inte kontrollera betalstatus just nu.', 'warning');
+      })
+      .finally(() => {
+        setButtonLoading(checkPaymentStatus, false);
       });
   }
 
@@ -403,13 +573,16 @@ document.addEventListener('DOMContentLoaded', () => {
           updateDebugInfo();
           if (isPaid(swishStatus)) {
             stopPaymentPolling();
+            setPaymentStatusBadge('PAID');
             setInfoState(paymentInfo, 'Betalning registrerad.', 'success');
             gotoConfirmation();
           } else if (isFailed(swishStatus)) {
             stopPaymentPolling();
+            setPaymentStatusBadge('FAILED');
             setInfoState(paymentInfo, 'Betalningen misslyckades. Försök igen.', 'error');
             retryPayment.hidden = false;
           } else {
+            setPaymentStatusBadge('PENDING');
             setInfoState(paymentInfo, 'Väntar på betalning...', 'loading');
           }
         })
@@ -422,6 +595,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function startStep4PaymentFlow() {
     paymentPanel.hidden = false;
     setInfoState(paymentInfo, 'Startar betalningsflöde …', 'loading');
+    setPaymentStatusBadge('PENDING');
     qrWrap.hidden = true;
     paymentQr.removeAttribute('src');
     openSwishLink.hidden = true;
@@ -431,7 +605,11 @@ document.addEventListener('DOMContentLoaded', () => {
       .then(() => requestSwishPayment())
       .catch(err => {
         setInfoState(paymentInfo, err.message || 'Kunde inte starta betalning', 'error');
+        setPaymentStatusBadge('FAILED');
         retryPayment.hidden = false;
+      })
+      .finally(() => {
+        setButtonLoading(step3Next, false);
       });
   }
 
@@ -477,6 +655,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   dateInput.addEventListener('change', () => {
+    setFieldError(dateError, '');
     state.date = dateInput.value;
     updatePriceInfo();
     if (state.rentalType === 'TWO_HOURS') {
@@ -489,6 +668,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   timeSelect.addEventListener('change', () => {
+    setFieldError(timeError, '');
     state.time = timeSelect.value;
     updateAvailabilityCounts();
     step3Next.disabled = true;
@@ -511,16 +691,26 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   step3Next.addEventListener('click', () => {
+    setFieldError(dateError, '');
+    setFieldError(timeError, '');
+    setFieldError(emailError, '');
+    if (!state.date) {
+      setFieldError(dateError, 'Välj ett datum.');
+      return;
+    }
+    if (state.rentalType === 'TWO_HOURS' && !state.time) {
+      setFieldError(timeError, 'Välj en starttid.');
+      return;
+    }
     const receiptRequested = !!receiptRequestedInput.checked;
     const customerEmail = (customerEmailInput.value || '').trim().toLowerCase();
     if (receiptRequested && (!customerEmail || !customerEmail.includes('@') || customerEmail.length > 254)) {
-      customerEmailInput.setCustomValidity('Ange en giltig e-postadress för kvitto.');
-      customerEmailInput.reportValidity();
+      setFieldError(emailError, 'Ange en giltig e-postadress för kvitto.');
       return;
     }
     customerEmailInput.setCustomValidity('');
     if (customerEmail && !customerEmailInput.checkValidity()) {
-      customerEmailInput.reportValidity();
+      setFieldError(emailError, 'E-postadressen har fel format.');
       return;
     }
     state.receiptRequested = receiptRequested;
@@ -536,20 +726,27 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.removeItem('receiptRequested');
     }
     updateSummary();
+    setButtonLoading(step3Next, true);
     showStep(4);
     startStep4PaymentFlow();
   });
 
   step4Back.addEventListener('click', () => {
     stopPaymentPolling();
+    setButtonLoading(step3Next, false);
     showStep(3);
   });
 
   retryPayment.addEventListener('click', () => {
     requestSwishPayment().catch(err => {
       setInfoState(paymentInfo, err.message || 'Kunde inte skapa betalning', 'error');
+      setPaymentStatusBadge('FAILED');
       retryPayment.hidden = false;
     });
+  });
+
+  checkPaymentStatus.addEventListener('click', () => {
+    checkPaymentStatusOnce();
   });
 
   const storedCustomerEmail = localStorage.getItem('customerEmail');
@@ -566,8 +763,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   receiptRequestedInput.addEventListener('change', () => {
     state.receiptRequested = !!receiptRequestedInput.checked;
+    setFieldError(emailError, '');
     syncReceiptEmailVisibility();
     updateSummary();
+  });
+
+  customerEmailInput.addEventListener('input', () => {
+    setFieldError(emailError, '');
   });
 
   showStep(1);
