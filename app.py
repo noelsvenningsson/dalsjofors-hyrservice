@@ -60,7 +60,7 @@ import time
 import base64
 import uuid
 import socket
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.parser import BytesParser
 from email.policy import default
 from http.cookies import SimpleCookie
@@ -1320,6 +1320,8 @@ class Handler(BaseHTTPRequestHandler):
         )
         report_to = (os.environ.get("REPORT_TO") or "svenningsson@outlook.com").strip()
         webhook_secret = (os.environ.get("NOTIFY_WEBHOOK_SECRET") or "").strip()
+        report_id = str(uuid.uuid4())
+        submitted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if not webhook_url:
             return self.end_json(
                 200,
@@ -1335,6 +1337,20 @@ class Handler(BaseHTTPRequestHandler):
             "secret": webhook_secret,
             "to": report_to,
             "subject": "TEST issue_report",
+            "reportId": report_id,
+            "submittedAt": submitted_at,
+            "attachmentNames": [],
+            "attachmentCount": 0,
+            "friendlyFields": {
+                "Släp": "TEST",
+                "Bokningsreferens": "",
+                "Typ av rapport": "Skada under hyra",
+                "Upptäckt datum/tid": "2026-02-21T13:10",
+                "Namn": "Dev Test",
+                "Telefon": "0700000000",
+                "E-post": "test@test.se",
+                "Beskrivning": "Test från /api/dev/report-webhook-test",
+            },
             "fields": {
                 "name": "Dev Test",
                 "phone": "0700000000",
@@ -1899,6 +1915,8 @@ class Handler(BaseHTTPRequestHandler):
         )
         report_to = (os.environ.get("REPORT_TO") or "svenningsson@outlook.com").strip()
         webhook_secret = (os.environ.get("NOTIFY_WEBHOOK_SECRET") or "").strip()
+        report_id = str(uuid.uuid4())
+        submitted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         if not webhook_url:
             logger.error("REPORT_WEBHOOK_MISSING url_env=REPORT_WEBHOOK_URL/NOTIFY_WEBHOOK_URL")
             return False
@@ -1939,12 +1957,27 @@ class Handler(BaseHTTPRequestHandler):
                     "dataBase64": base64.b64encode(item["data"]).decode("ascii"),
                 }
             )
+        attachment_names = [item["filename"] for item in attachments_payload]
 
         payload: Dict[str, Any] = {
             "type": "issue_report",
             "secret": webhook_secret,
             "to": report_to,
             "subject": subject,
+            "reportId": report_id,
+            "submittedAt": submitted_at,
+            "attachmentNames": attachment_names,
+            "attachmentCount": len(attachments_payload),
+            "friendlyFields": {
+                "Släp": self._trailer_label(fields["trailer_type"]),
+                "Bokningsreferens": fields.get("booking_reference") or "",
+                "Typ av rapport": report_type,
+                "Upptäckt datum/tid": fields["detected_at"],
+                "Namn": fields["name"],
+                "Telefon": fields["phone"],
+                "E-post": fields["email"],
+                "Beskrivning": fields["message"],
+            },
             "fields": {
                 "name": fields["name"],
                 "phone": fields["phone"],
@@ -1968,6 +2001,8 @@ class Handler(BaseHTTPRequestHandler):
         payload_size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
         if payload_size > REPORT_MAX_WEBHOOK_PAYLOAD_BYTES and attachments_payload:
             payload["attachments"] = []
+            payload["attachmentNames"] = []
+            payload["attachmentCount"] = 0
             too_large_message = "Bilder kunde inte bifogas pga storlek, be kunden skicka separat"
             payload["message"] = f"{message_text}\n\n{too_large_message}" if message_text else too_large_message
         approx_payload_size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))

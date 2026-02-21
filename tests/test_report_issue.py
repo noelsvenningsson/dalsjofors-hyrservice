@@ -1,6 +1,7 @@
 import os
 import threading
 import unittest
+import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -133,6 +134,18 @@ class ReportIssueTest(unittest.TestCase):
                 self.assertEqual(payload["type"], "issue_report")
                 self.assertEqual(payload["secret"], "issue-secret")
                 self.assertEqual(payload["to"], "svenningsson@outlook.com")
+                self.assertTrue(payload["reportId"])
+                uuid.UUID(payload["reportId"])
+                self.assertIn("submittedAt", payload)
+                self.assertEqual(payload["attachmentCount"], 1)
+                self.assertEqual(len(payload["attachmentNames"]), 1)
+                self.assertTrue(payload["attachmentNames"][0].endswith(".png"))
+                self.assertIn("friendlyFields", payload)
+                self.assertEqual(payload["friendlyFields"]["Släp"], "Galler-släp")
+                self.assertEqual(payload["friendlyFields"]["Bokningsreferens"], "DHS-TEST-1")
+                self.assertEqual(payload["friendlyFields"]["Typ av rapport"], "Skada under hyra")
+                self.assertEqual(payload["friendlyFields"]["Namn"], "Test Person")
+                self.assertEqual(payload["friendlyFields"]["Beskrivning"], "Skrapskada på vänster sida.")
                 self.assertEqual(len(payload["attachments"]), 1)
         finally:
             for key, value in env_backup.items():
