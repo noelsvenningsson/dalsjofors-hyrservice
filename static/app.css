@@ -644,6 +644,18 @@ input[type="email"]:focus-visible,
   }
 }
 
+@media (min-width: 641px) {
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  main#wizard {
+    flex: 1 0 auto;
+  }
+}
+
 @media (max-width: 640px) {
   main#wizard {
     width: min(700px, 100% - 1rem);
