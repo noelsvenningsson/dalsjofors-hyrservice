@@ -66,6 +66,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const summaryEl = document.getElementById('summary');
   const step4Back = document.getElementById('step4-back');
+  const termsAcceptedInput = document.getElementById('terms-accepted');
+  const termsError = document.getElementById('terms-error');
+  const startPaymentButton = document.getElementById('start-payment');
   const paymentPanel = document.getElementById('payment-panel');
   const paymentInfo = document.getElementById('payment-info');
   const paymentStatusDot = document.getElementById('payment-status-dot');
@@ -633,8 +636,26 @@ document.addEventListener('DOMContentLoaded', () => {
         retryPayment.hidden = false;
       })
       .finally(() => {
-        setButtonLoading(step3Next, false);
+        setButtonLoading(startPaymentButton, false);
+        syncTermsState();
       });
+  }
+
+  function resetStep4PaymentUI() {
+    stopPaymentPolling();
+    paymentPanel.hidden = true;
+    setInfoState(paymentInfo, 'Startar betalningsflöde …', 'loading');
+    setPaymentStatusBadge('PENDING');
+    qrWrap.hidden = true;
+    paymentQr.removeAttribute('src');
+    openSwishLink.hidden = true;
+    openSwishLink.removeAttribute('href');
+    retryPayment.hidden = true;
+    setFieldError(termsError, '');
+  }
+
+  function syncTermsState() {
+    startPaymentButton.disabled = !termsAcceptedInput.checked;
   }
 
   [cardGaller, cardKap].forEach(card => {
@@ -762,15 +783,36 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.removeItem('receiptRequested');
     }
     updateSummary();
-    setButtonLoading(step3Next, true);
+    setButtonLoading(step3Next, false);
+    termsAcceptedInput.checked = false;
+    syncTermsState();
+    resetStep4PaymentUI();
     showStep(4);
-    startStep4PaymentFlow();
   });
 
   step4Back.addEventListener('click', () => {
     stopPaymentPolling();
     setButtonLoading(step3Next, false);
+    setButtonLoading(startPaymentButton, false);
+    syncTermsState();
+    setFieldError(termsError, '');
     showStep(3);
+  });
+
+  termsAcceptedInput.addEventListener('change', () => {
+    setFieldError(termsError, '');
+    syncTermsState();
+  });
+
+  startPaymentButton.addEventListener('click', () => {
+    if (!termsAcceptedInput.checked) {
+      setFieldError(termsError, 'Du måste acceptera villkoren för att fortsätta.');
+      syncTermsState();
+      return;
+    }
+    setFieldError(termsError, '');
+    setButtonLoading(startPaymentButton, true);
+    startStep4PaymentFlow();
   });
 
   retryPayment.addEventListener('click', () => {
@@ -808,6 +850,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setFieldError(emailError, '');
   });
 
+  syncTermsState();
   showStep(1);
   dateInput.min = new Date().toISOString().slice(0, 10);
 });

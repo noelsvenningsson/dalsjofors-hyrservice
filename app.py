@@ -909,6 +909,8 @@ class Handler(BaseHTTPRequestHandler):
         # Root page
         if path in ("/", ""):
             return self.serve_file("index.html", "text/html; charset=utf-8")
+        if path == "/terms":
+            return self.serve_file("terms.html", "text/html; charset=utf-8")
         if path == "/report-issue":
             return self.serve_report_issue_page()
         if path == "/admin/login":

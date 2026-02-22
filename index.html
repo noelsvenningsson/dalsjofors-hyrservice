@@ -129,8 +129,15 @@
     <!-- Steg 4: Sammanfattning -->
     <section id="step4" class="step" hidden>
       <h2>Sammanfattning</h2>
-      <p class="step-intro">Kontrollera uppgifterna. Betalningsförfrågan skapas automatiskt.</p>
+      <p class="step-intro">Kontrollera uppgifterna, acceptera villkoren och starta sedan betalningen.</p>
       <div id="summary" class="summary-list"></div>
+      <div class="terms-consent">
+        <label class="terms-checkbox-label" for="terms-accepted">
+          <input type="checkbox" id="terms-accepted">
+          Jag accepterar <a href="/terms" target="_blank" rel="noopener noreferrer">villkoren</a>
+        </label>
+        <p id="terms-error" class="field-error" hidden></p>
+      </div>
       <div id="payment-panel" class="payment-panel" hidden>
         <div id="payment-status-row" class="payment-status-row" aria-live="polite">
           <span id="payment-status-dot" class="payment-status-dot is-pending"></span>
@@ -148,6 +155,7 @@
       </div>
       <div class="actions sticky-mobile">
         <button type="button" id="step4-back" class="secondary">Tillbaka</button>
+        <button type="button" id="start-payment" class="primary" disabled>Starta betalning</button>
       </div>
     </section>
 
@@ -173,6 +181,7 @@
   <footer class="site-footer">
     <p>&copy; 2026 Dalsjöfors Hyrservice AB</p>
     <p>Org.nr 559062-4556 • Boråsvägen 58B, 516 34 Dalsjöfors • 070-457 97 09</p>
+    <p><a class="admin-link" href="/terms">Villkor och information</a></p>
     <p><a class="admin-link" href="/admin">Admin</a></p>
   </footer>
 
