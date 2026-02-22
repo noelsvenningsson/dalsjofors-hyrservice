@@ -54,7 +54,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const dateError = document.getElementById('date-error');
   const timeContainer = document.getElementById('time-container');
   const timeSelect = document.getElementById('rental-time');
-  const timeLegend = document.getElementById('time-legend');
   const timeError = document.getElementById('time-error');
   const receiptRequestedInput = document.getElementById('receipt-requested');
   const receiptEmailWrap = document.getElementById('receiptEmailWrap');
@@ -677,9 +676,6 @@ document.addEventListener('DOMContentLoaded', () => {
     radio.addEventListener('change', () => {
       state.rentalType = radio.value;
       timeContainer.hidden = state.rentalType !== 'TWO_HOURS';
-      if (timeLegend) {
-        timeLegend.hidden = state.rentalType !== 'TWO_HOURS';
-      }
       if (state.rentalType === 'TWO_HOURS') {
         updateTimeOptions();
         state.time = timeSelect.value;
